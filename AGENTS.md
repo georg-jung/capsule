@@ -19,3 +19,7 @@ Capsule is a small, self-hosted Go application for passkey-gated static HTML fil
 - Full local stack: `docker compose up --build`
 
 Prefer tests through the HTTP or browser interfaces. Keep the runtime dependency set small.
+
+## Workflow preference
+
+Simple, low-risk fixes may land directly on `main`; a pull request is not required unless the change benefits from review or coordination.
