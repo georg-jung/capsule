@@ -71,9 +71,30 @@ Capsule has three deliberate trust boundaries:
 
 Sessions use random bearer tokens stored only as hashes, `HttpOnly`/`SameSite=Strict` cookies (`Secure` in production), exact-origin checks, and CSRF tokens. Invite secrets are placed after the URL fragment so they do not enter proxy logs or referrer headers; the browser exchanges and removes the fragment before registration.
 
-## Development
+## Local development
 
 The runtime is Go with standard-library HTTP/templates, pure-Go SQLite, and `go-webauthn`. The browser interface is dependency-free JavaScript and CSS. Playwright is development-only.
+
+Docker with Compose is enough to run the current checkout. The development override builds the image from local source, and the project name keeps its volume separate from other Capsule instances.
+
+```sh
+git clone https://github.com/georg-jung/capsule.git
+cd capsule
+export CAPSULE_ORIGIN=http://localhost:8080
+docker compose --project-name capsule-dev -f compose.yaml -f compose.dev.yaml up --build
+```
+
+In PowerShell, set the origin with `$env:CAPSULE_ORIGIN = "http://localhost:8080"` and run the same Docker command. Open [http://localhost:8080](http://localhost:8080); the first successful passkey registration claims the local instance. Press Ctrl+C to stop it. Uploaded files and registrations remain in the `capsule-dev` Compose volume.
+
+After changing source files, run the same `docker compose ... up --build` command again and refresh the browser. Compose rebuilds the changed layers and recreates the container while preserving its data. For a detached development container, add `-d`; follow its output with:
+
+```sh
+docker compose --project-name capsule-dev -f compose.yaml -f compose.dev.yaml logs -f capsule
+```
+
+To stop and remove the development container while keeping its data, replace `up --build` with `down`. Adding `--volumes` to `down` also deletes the isolated development data and returns the instance to its unclaimed state.
+
+### Tests
 
 ```sh
 # Unit and HTTP integration tests, including the race detector

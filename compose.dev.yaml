@@ -1,0 +1,7 @@
+services:
+  capsule:
+    image: capsule:dev
+    build:
+      context: .
+      args:
+        VERSION: dev
