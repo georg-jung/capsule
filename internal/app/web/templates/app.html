@@ -14,7 +14,16 @@
   <header class="app-header">
     <div class="brand">
       <img class="capsule-mark small" src="/assets/icon.svg" alt="">
-      <div><h1>{{.SiteName}}</h1><span id="connectivity" class="connectivity">Online</span></div>
+      <div>
+        <h1>{{.SiteName}}</h1>
+        <div class="brand-status">
+          <span id="connectivity" class="connectivity">Online</span>
+          <span class="dot-separator">·</span>
+          <span id="file-summary" class="file-summary">Loading…</span>
+          <span class="dot-separator">·</span>
+          <span id="offline-status" class="offline-status">Preparing offline copy…</span>
+        </div>
+      </div>
     </div>
     <div class="header-actions">
       <button id="install-button" class="secondary" type="button" hidden>Install</button>
@@ -24,14 +33,27 @@
 
   <main id="app-shell" class="app-main">
     <section class="library" aria-labelledby="library-title">
-      <div class="section-heading">
-        <div><h2 id="library-title">Your files</h2><p id="file-summary">Loading…</p></div>
-        <span id="offline-status" class="offline-status">Preparing offline copy…</span>
-      </div>
-      <div class="library-toolbar">
-        <label class="search-field" for="file-search"><span class="visually-hidden">Search files</span><input id="file-search" type="search" placeholder="Search filenames" autocomplete="off" disabled></label>
-        <label class="sort-field" for="file-sort"><span>Sort</span><select id="file-sort"><option value="name">Name</option><option value="updated">Recently updated</option></select></label>
-        <button id="add-files-button" type="button" data-write>Add files</button>
+      <div class="library-header">
+        <h2 id="library-title">Your files</h2>
+        <div class="library-toolbar">
+          <div id="search-container" class="search-container">
+            <button id="search-toggle" type="button" class="icon-button secondary search-toggle" aria-label="Search files" title="Search files">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            </button>
+            <label class="search-field" for="file-search">
+              <span class="visually-hidden">Search files</span>
+              <input id="file-search" type="search" placeholder="Search filenames" autocomplete="off" disabled>
+            </label>
+          </div>
+          <label class="sort-field" for="file-sort">
+            <span class="visually-hidden">Sort files</span>
+            <select id="file-sort" title="Sort order">
+              <option value="name">Name</option>
+              <option value="updated">Recent</option>
+            </select>
+          </label>
+          <button id="add-files-button" type="button" data-write>Add files</button>
+        </div>
       </div>
       <div id="file-table-wrap" class="file-table-wrap" hidden>
         <table class="file-table">

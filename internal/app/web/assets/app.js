@@ -341,7 +341,27 @@
     uploadFiles([...(event.dataTransfer?.files || [])]).catch(error => toast(error.message));
   });
 
-  $("#file-search").addEventListener("input", event => {
+  const searchContainer = $("#search-container");
+  const searchInput = $("#file-search");
+  const searchToggle = $("#search-toggle");
+
+  function expandSearch(event) {
+    if (event && event.type !== "click") event.preventDefault();
+    searchContainer.classList.add("expanded");
+    requestAnimationFrame(() => {
+      searchInput.focus();
+    });
+  }
+
+  if (searchToggle) {
+    searchToggle.addEventListener("pointerdown", expandSearch);
+    searchToggle.addEventListener("click", expandSearch);
+  }
+
+  searchInput.addEventListener("blur", () => {
+    if (!searchInput.value) searchContainer.classList.remove("expanded");
+  });
+  searchInput.addEventListener("input", event => {
     clearTimeout(state.searchTimer);
     state.searchTimer = setTimeout(() => { state.query = event.target.value; renderFiles(); }, 160);
   });
