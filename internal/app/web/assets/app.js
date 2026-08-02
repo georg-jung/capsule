@@ -1,5 +1,5 @@
 (() => {
-  const state = { library: null, admin: null, csrf: "", deferredInstall: null, online: navigator.onLine };
+  const state = { library: null, admin: null, csrf: "", deferredInstall: null, online: navigator.onLine, query: "", sort: "name" };
   const $ = selector => document.querySelector(selector);
 
   function fileURL(file) {
@@ -14,6 +14,14 @@
 
   function formatDate(value) {
     return value ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "Never";
+  }
+
+  function normalizeSearch(value) {
+    return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s._-]+/g, " ").trim();
+  }
+
+  function libraryFiles() {
+    return Array.isArray(state.library?.files) ? state.library.files : [];
   }
 
   function toast(message) {
@@ -35,49 +43,85 @@
   }
 
   function renderFiles() {
-    const grid = $("#file-grid");
-    const files = state.library?.files || [];
-    grid.replaceChildren();
-    $("#empty-state").hidden = files.length !== 0;
-    $("#file-summary").textContent = files.length === 1 ? "1 file" : `${files.length} files`;
+    const list = $("#file-list");
+    const allFiles = libraryFiles();
+    const query = normalizeSearch(state.query);
+    const files = allFiles
+      .filter(file => !query || normalizeSearch(file.name).includes(query))
+      .sort((left, right) => {
+        if (state.sort === "updated") {
+          const newestFirst = new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+          if (newestFirst) return newestFirst;
+        }
+        return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+      });
+    list.replaceChildren();
+    $("#empty-state").hidden = allFiles.length !== 0;
+    $("#search-empty-state").hidden = allFiles.length === 0 || files.length !== 0;
+    $("#file-table-wrap").hidden = files.length === 0;
+    $("#file-search").disabled = allFiles.length === 0;
+    $("#file-sort").disabled = allFiles.length < 2;
+    $("#file-summary").textContent = query
+      ? `${files.length} of ${allFiles.length} ${allFiles.length === 1 ? "file" : "files"}`
+      : (allFiles.length === 1 ? "1 file" : `${allFiles.length} files`);
     for (const file of files) {
-      const card = document.createElement("article");
-      card.className = "file-card";
+      const row = document.createElement("tr");
+      row.className = "file-row";
+      const nameCell = document.createElement("td");
       const link = document.createElement("a");
+      link.className = "file-link";
       link.href = fileURL(file);
-      const icon = document.createElement("div");
-      icon.className = "file-icon";
-      icon.textContent = file.name.toLowerCase().endsWith(".html") ? "HTML" : "FILE";
-      const name = document.createElement("h3");
-      name.className = "file-name";
-      name.textContent = file.name;
-      const meta = document.createElement("p");
-      meta.className = "file-meta";
-      meta.textContent = `${formatBytes(file.size)} · Updated ${formatDate(file.updatedAt)}`;
-      link.append(icon, name, meta);
-      const actions = document.createElement("div");
-      actions.className = "file-actions";
+      link.textContent = file.name;
+      nameCell.append(link);
+      const updated = document.createElement("td");
+      updated.className = "file-updated";
+      const time = document.createElement("time");
+      time.dateTime = file.updatedAt;
+      time.textContent = formatDate(file.updatedAt);
+      updated.append(time);
+      const actionsCell = document.createElement("td");
+      actionsCell.className = "file-actions-cell";
+      const actions = document.createElement("details");
+      actions.className = "row-actions";
+      const actionsSummary = document.createElement("summary");
+      actionsSummary.setAttribute("aria-label", `Actions for ${file.name}`);
+      actionsSummary.textContent = "⋯";
+      const menu = document.createElement("div");
+      menu.className = "file-menu";
+      const metadata = document.createElement("p");
+      metadata.className = "file-menu-meta";
+      metadata.textContent = `${formatBytes(file.size)} · Updated ${formatDate(file.updatedAt)}`;
+      const buttons = document.createElement("div");
+      buttons.className = "file-menu-actions";
       const rename = document.createElement("button");
       rename.type = "button";
       rename.className = "secondary";
       rename.dataset.write = "";
       rename.textContent = "Rename";
-      rename.addEventListener("click", () => renameFile(file));
+      rename.addEventListener("click", () => { actions.open = false; renameFile(file); });
       const remove = document.createElement("button");
       remove.type = "button";
-      remove.className = "secondary";
+      remove.className = "danger";
       remove.dataset.write = "";
       remove.textContent = "Delete";
-      remove.addEventListener("click", () => deleteFile(file));
-      actions.append(rename, remove);
-      card.append(link, actions);
-      grid.append(card);
+      remove.addEventListener("click", () => { actions.open = false; deleteFile(file); });
+      buttons.append(rename, remove);
+      menu.append(metadata, buttons);
+      actions.append(actionsSummary, menu);
+      actions.addEventListener("toggle", () => {
+        if (!actions.open) return;
+        for (const other of document.querySelectorAll(".row-actions[open]")) if (other !== actions) other.open = false;
+      });
+      actionsCell.append(actions);
+      row.append(nameCell, updated, actionsCell);
+      list.append(row);
     }
     updateConnectivity();
   }
 
   async function loadLibrary() {
     state.library = await fetchJSON("/api/library");
+    if (!Array.isArray(state.library.files)) state.library.files = [];
     state.csrf = state.library.csrfToken;
     $("#site-name").value = state.library.siteName;
     renderFiles();
@@ -92,6 +136,7 @@
 
   async function uploadFiles(files) {
     if (!state.online || !files.length) return;
+    if ($("#upload-dialog").open) $("#upload-dialog").close();
     const data = new FormData();
     for (const file of files) data.append("files", file, file.name);
     toast(`Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}…`);
@@ -99,6 +144,7 @@
     const failures = result.results.filter(item => item.error);
     const replacements = result.results.filter(item => item.replaced).length;
     await loadLibrary();
+    $("#file-input").value = "";
     if (failures.length) toast(`${failures.length} upload${failures.length === 1 ? "" : "s"} failed: ${failures[0].error}`);
     else toast(`${result.results.length} file${result.results.length === 1 ? "" : "s"} uploaded${replacements ? `, ${replacements} replaced` : ""}.`);
   }
@@ -130,19 +176,32 @@
       card.className = "owner-card";
       const heading = document.createElement("div");
       heading.className = "owner-title";
+      const identity = document.createElement("div");
+      identity.className = "owner-identity";
       const title = document.createElement("strong");
-      title.textContent = `${owner.personName} · ${owner.passkeyName}`;
-      heading.append(title);
+      title.textContent = owner.personName;
+      const passkey = document.createElement("span");
+      passkey.className = "owner-passkey";
+      passkey.textContent = owner.passkeyName;
+      identity.append(title, passkey);
+      heading.append(identity);
       if (owner.current) {
         const current = document.createElement("span");
         current.className = "current-badge";
         current.textContent = "This passkey";
         heading.append(current);
       }
+      const registered = document.createElement("p");
+      registered.className = "owner-registered";
+      registered.textContent = `Registered ${formatDate(owner.createdAt)}`;
+      const details = document.createElement("details");
+      details.className = "owner-details";
+      const detailsSummary = document.createElement("summary");
+      detailsSummary.textContent = "Passkey details";
       const metadata = document.createElement("div");
       metadata.className = "owner-meta";
       const rows = [
-        ["Registered", formatDate(owner.createdAt)], ["Last used", formatDate(owner.lastUsedAt)],
+        ["Last used", formatDate(owner.lastUsedAt)],
         ["AAGUID", owner.aaguid || "Unknown"], ["Attachment", owner.attachment || "Unknown"],
         ["Transports", owner.transports?.join(", ") || "Unknown"], ["Synced", owner.backupEligible ? (owner.backupState ? "Yes" : "Eligible") : "No"],
         ["Sign count", String(owner.signCount)], ["Credential ID", owner.credentialId],
@@ -153,6 +212,7 @@
         row.textContent = `${label}: ${value}`;
         metadata.append(row);
       }
+      details.append(detailsSummary, metadata);
       const actions = document.createElement("div");
       actions.className = "owner-actions";
       const rename = document.createElement("button");
@@ -165,7 +225,7 @@
         remove.addEventListener("click", () => deleteOwner(owner));
         actions.append(remove);
       }
-      card.append(heading, metadata, actions);
+      card.append(heading, registered, details, actions);
       list.append(card);
     }
     updateConnectivity();
@@ -193,6 +253,7 @@
   async function synchronizeOffline() {
     if (!("serviceWorker" in navigator) || !state.online) return;
     const status = $("#offline-status");
+    const files = libraryFiles();
     status.textContent = "Preparing offline copy…";
     status.className = "offline-status";
     try {
@@ -203,11 +264,12 @@
       const result = await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error("Offline synchronization timed out.")), 60000);
         channel.port1.onmessage = event => { clearTimeout(timeout); resolve(event.data); };
-        worker.postMessage({ type: "SYNC_PRIVATE", urls: state.library.files.map(fileURL) }, [channel.port2]);
+        worker.postMessage({ type: "SYNC_PRIVATE", urls: files.map(fileURL) }, [channel.port2]);
       });
       if (result.ok) {
-        status.textContent = "Ready offline";
-        status.className = "offline-status ready";
+        status.textContent = files.length ? "Ready offline" : "No files to cache";
+        status.className = files.length ? "offline-status ready" : "offline-status";
+        status.removeAttribute("title");
       } else throw new Error(result.error || "Some files could not be cached.");
     } catch (error) {
       status.textContent = "Offline copy incomplete";
@@ -240,12 +302,50 @@
     return state.online;
   }
 
+  function openUploadDialog() {
+    if (state.online) $("#upload-dialog").showModal();
+  }
+
+  $("#add-files-button").addEventListener("click", openUploadDialog);
   $("#choose-files").addEventListener("click", () => $("#file-input").click());
   $("#file-input").addEventListener("change", event => uploadFiles([...event.target.files]).catch(error => toast(error.message)));
   const dropZone = $("#drop-zone");
   for (const type of ["dragenter", "dragover"]) dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.add("dragging"); });
   for (const type of ["dragleave", "drop"]) dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.remove("dragging"); });
-  dropZone.addEventListener("drop", event => uploadFiles([...event.dataTransfer.files]).catch(error => toast(error.message)));
+
+  let dragDepth = 0;
+  function isFileDrag(event) {
+    return [...(event.dataTransfer?.types || [])].includes("Files");
+  }
+  addEventListener("dragenter", event => {
+    if (!state.online || !isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth++;
+    $("#page-drop-overlay").hidden = false;
+  });
+  addEventListener("dragover", event => {
+    if (!state.online || !isFileDrag(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  });
+  addEventListener("dragleave", event => {
+    if (!isFileDrag(event)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) $("#page-drop-overlay").hidden = true;
+  });
+  addEventListener("drop", event => {
+    if (!state.online || !isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth = 0;
+    $("#page-drop-overlay").hidden = true;
+    uploadFiles([...(event.dataTransfer?.files || [])]).catch(error => toast(error.message));
+  });
+
+  $("#file-search").addEventListener("input", event => {
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => { state.query = event.target.value; renderFiles(); }, 160);
+  });
+  $("#file-sort").addEventListener("change", event => { state.sort = event.target.value; renderFiles(); });
 
   $("#settings-button").addEventListener("click", async () => {
     $("#settings-dialog").showModal();
@@ -295,5 +395,5 @@
   $("#install-button").addEventListener("click", async () => { await state.deferredInstall?.prompt(); state.deferredInstall = null; $("#install-button").hidden = true; });
 
   updateConnectivity();
-  refreshConnectivity().then(online => Promise.all([loadLibrary(), online ? loadAdmin() : Promise.resolve()])).catch(error => toast(error.message));
+  refreshConnectivity().then(() => loadLibrary()).catch(error => toast(error.message));
 })();

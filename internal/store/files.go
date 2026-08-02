@@ -133,7 +133,7 @@ FROM files ORDER BY name COLLATE NOCASE, id`)
 	}
 	defer rows.Close()
 
-	var files []File
+	files := make([]File, 0)
 	for rows.Next() {
 		file, err := scanFile(rows)
 		if err != nil {

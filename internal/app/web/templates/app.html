@@ -22,27 +22,40 @@
     </div>
   </header>
 
-  <main class="app-main">
-    <section id="drop-zone" class="drop-zone" aria-labelledby="upload-title">
-      <input id="file-input" type="file" multiple hidden>
-      <div>
-        <h2 id="upload-title">Add files</h2>
-        <p>Drop one or more standalone files here, or choose them from this device.</p>
-      </div>
-      <button id="choose-files" type="button" data-write>Choose files</button>
-    </section>
-
+  <main id="app-shell" class="app-main">
     <section class="library" aria-labelledby="library-title">
       <div class="section-heading">
         <div><h2 id="library-title">Your files</h2><p id="file-summary">Loading…</p></div>
         <span id="offline-status" class="offline-status">Preparing offline copy…</span>
       </div>
-      <div id="file-grid" class="file-grid" aria-live="polite"></div>
-      <div id="empty-state" class="empty-state" hidden>
-        <h3>No files yet</h3><p>Upload a standalone HTML page to get started.</p>
+      <div class="library-toolbar">
+        <label class="search-field" for="file-search"><span class="visually-hidden">Search files</span><input id="file-search" type="search" placeholder="Search filenames" autocomplete="off" disabled></label>
+        <label class="sort-field" for="file-sort"><span>Sort</span><select id="file-sort"><option value="name">Name</option><option value="updated">Recently updated</option></select></label>
+        <button id="add-files-button" type="button" data-write>Add files</button>
       </div>
+      <div id="file-table-wrap" class="file-table-wrap" hidden>
+        <table class="file-table">
+          <thead><tr><th scope="col">File</th><th scope="col" class="updated-column">Updated</th><th scope="col" class="actions-column"><span class="visually-hidden">Actions</span></th></tr></thead>
+          <tbody id="file-list" aria-live="polite"></tbody>
+        </table>
+      </div>
+      <div id="empty-state" class="empty-state" hidden>
+        <h3>No files yet</h3><p>Add a standalone HTML page to start your private index.</p>
+      </div>
+      <div id="search-empty-state" class="empty-state" hidden><h3>No matching files</h3><p>Try a different filename.</p></div>
     </section>
   </main>
+
+  <dialog id="upload-dialog" class="upload-dialog">
+    <form method="dialog" class="dialog-heading"><div><h2>Add files</h2><p>Upload one or many files at once.</p></div><button class="icon-button secondary" value="close" aria-label="Close">×</button></form>
+    <section id="drop-zone" class="drop-zone" aria-labelledby="upload-title">
+      <input id="file-input" type="file" multiple hidden>
+      <div><h3 id="upload-title">Drop files here</h3><p>Or choose them from this device.</p></div>
+      <button id="choose-files" type="button" data-write>Choose files</button>
+    </section>
+  </dialog>
+
+  <div id="page-drop-overlay" class="page-drop-overlay" hidden aria-hidden="true"><strong>Drop files to upload</strong></div>
 
   <dialog id="settings-dialog">
     <form method="dialog" class="dialog-heading"><div><h2>Manage Capsule</h2><p>Every registered passkey is an equal owner.</p></div><button class="icon-button secondary" value="close" aria-label="Close">×</button></form>
@@ -55,8 +68,10 @@
       <div id="invite-result" class="invite-result" hidden></div>
       <div id="owner-list" class="owner-list"></div>
     </section>
-    <section class="settings-section danger-zone">
-      <h3>Session</h3><button id="logout-button" class="danger" type="button" data-write>Log out on this device</button>
+    <section class="settings-section session-section">
+      <h3>This device</h3>
+      <p class="settings-help">Log out this browser and remove its offline copy. Other owners and devices stay signed in.</p>
+      <div class="session-actions"><button id="logout-button" class="danger" type="button" data-write>Log out on this device</button></div>
     </section>
   </dialog>
 

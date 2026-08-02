@@ -1,6 +1,7 @@
 const { test, expect } = require("@playwright/test");
 
 test("complete private app lifecycle works online and offline", async ({ browser }) => {
+  const longFilename = "beta-with-a-very-long-descriptive-filename-for-a-standalone-tool.html";
   const ownerContext = await browser.newContext();
   await ownerContext.credentials.install();
   const ownerPage = await ownerContext.newPage();
@@ -12,6 +13,10 @@ test("complete private app lifecycle works online and offline", async ({ browser
   await ownerPage.getByRole("button", { name: "Create owner passkey" }).click();
   await expect(ownerPage).toHaveURL(/\/app$/);
   await expect(ownerPage.getByRole("heading", { name: "Pocket tools" })).toBeVisible();
+  await expect(ownerPage.locator("#offline-status")).toHaveText("No files to cache", { timeout: 30_000 });
+  await expect(ownerPage.locator("#upload-dialog")).not.toBeVisible();
+  await ownerPage.locator("#add-files-button").click();
+  await expect(ownerPage.locator("#upload-dialog")).toBeVisible();
 
   await ownerPage.locator("#file-input").setInputFiles([
     {
@@ -20,11 +25,23 @@ test("complete private app lifecycle works online and offline", async ({ browser
       buffer: Buffer.from("<!doctype html><h1>Alpha</h1><script>localStorage.setItem('capsule-e2e','shared')</script>"),
     },
     {
-      name: "beta.html",
+      name: longFilename,
       mimeType: "text/html",
       buffer: Buffer.from("<!doctype html><h1>Beta</h1><output id='stored'></output><script>stored.textContent=localStorage.getItem('capsule-e2e')||'missing'</script>"),
     },
   ]);
+  await expect(ownerPage.locator("#file-summary")).toHaveText("2 files");
+  await expect(ownerPage.locator("#upload-dialog")).not.toBeVisible();
+
+  const longNameLink = ownerPage.getByRole("link", { name: longFilename });
+  await expect(longNameLink).toBeVisible();
+  expect(await longNameLink.evaluate(element => getComputedStyle(element).textOverflow)).not.toBe("ellipsis");
+  expect(await longNameLink.evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+
+  await ownerPage.locator("#file-search").fill("very long descriptive");
+  await expect(ownerPage.locator("#file-summary")).toHaveText("1 of 2 files");
+  await expect(ownerPage.locator(".file-row")).toHaveCount(1);
+  await ownerPage.locator("#file-search").fill("");
   await expect(ownerPage.locator("#file-summary")).toHaveText("2 files");
 
   const transfer = await ownerPage.evaluateHandle(() => {
@@ -32,7 +49,7 @@ test("complete private app lifecycle works online and offline", async ({ browser
     value.items.add(new File(["<!doctype html><h1>Dragged</h1>"], "dragged.html", { type: "text/html" }));
     return value;
   });
-  await ownerPage.locator("#drop-zone").dispatchEvent("drop", { dataTransfer: transfer });
+  await ownerPage.locator("#app-shell").dispatchEvent("drop", { dataTransfer: transfer });
   await expect(ownerPage.locator("#file-summary")).toHaveText("3 files");
 
   const alphaLink = ownerPage.getByRole("link", { name: /alpha\.html/i });
@@ -44,11 +61,14 @@ test("complete private app lifecycle works online and offline", async ({ browser
   });
   await expect(ownerPage.locator("#toast")).toContainText("1 replaced");
   await expect(alphaLink).not.toHaveAttribute("href", originalAlphaURL);
+  await ownerPage.locator("#file-sort").selectOption("updated");
+  await expect(ownerPage.locator(".file-row").first().getByRole("link")).toHaveText("alpha.html");
+  await ownerPage.locator("#file-sort").selectOption("name");
   const updatedAlphaURL = await alphaLink.getAttribute("href");
   await alphaLink.click();
   await expect(ownerPage.getByRole("heading", { name: "Alpha v2" })).toBeVisible();
   await ownerPage.goBack();
-  await ownerPage.getByRole("link", { name: /beta\.html/i }).click();
+  await ownerPage.getByRole("link", { name: longFilename }).click();
   await expect(ownerPage.locator("#stored")).toHaveText("shared");
   await ownerPage.goBack();
 
@@ -60,6 +80,10 @@ test("complete private app lifecycle works online and offline", async ({ browser
 
   await ownerPage.getByRole("button", { name: "Manage" }).click();
   await expect(ownerPage.locator("#owner-list")).toContainText("Georg");
+  const ownerCard = ownerPage.locator(".owner-card", { hasText: "Georg" });
+  await expect(ownerCard.getByText(/Credential ID:/)).not.toBeVisible();
+  await ownerCard.getByText("Passkey details").click();
+  await expect(ownerCard.getByText(/Credential ID:/)).toBeVisible();
   await ownerPage.getByRole("button", { name: "Invite owner" }).click();
   await expect(ownerPage.locator("#invite-result")).toContainText("/join#");
   const inviteText = await ownerPage.locator("#invite-result div").textContent();
@@ -108,11 +132,11 @@ test("complete private app lifecycle works online and offline", async ({ browser
   await secondContext.setOffline(true);
   await secondPage.reload();
   await expect(secondPage.locator("#file-summary")).toHaveText("3 files");
-  await expect(secondPage.getByRole("button", { name: "Choose files" })).toBeDisabled();
+  await expect(secondPage.getByRole("button", { name: "Add files" })).toBeDisabled();
   await secondPage.getByRole("link", { name: /alpha\.html/i }).click();
   await expect(secondPage.getByRole("heading", { name: "Alpha v2" })).toBeVisible();
   await secondPage.goBack();
-  await secondPage.getByRole("link", { name: /beta\.html/i }).click();
+  await secondPage.getByRole("link", { name: longFilename }).click();
   await expect(secondPage.locator("#stored")).toHaveText("shared");
   await secondPage.goBack();
 
