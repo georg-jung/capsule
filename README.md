@@ -100,7 +100,7 @@ git push origin main
 git push origin "$tag"
 ```
 
-The first release in this repository is `v1.0.2`; NBGV's default height counts both versioning commits. Pushing a computed tag publishes `latest`, the full version, its major/minor tag, and an immutable `sha-*` tag, then creates the corresponding GitHub Release. To start a later minor or major line, run `dotnet nbgv set-version 1.1` (or `2.0`) and commit the resulting `version.json` change. Do not use `nbgv prepare-release`; Capsule has no release-branch flow.
+Pushing a computed tag publishes `latest`, the full version, its major/minor tag, and an immutable `sha-*` tag, then creates the corresponding GitHub Release. To start a later minor or major line, run `dotnet nbgv set-version 1.1` (or `2.0`) and commit the resulting `version.json` change. Do not use `nbgv prepare-release`; Capsule has no release-branch flow.
 
 The container workflow may also be started manually. A manual run from an untagged commit publishes only `manual-*` and `sha-*` tags and does not create a public release or move `latest`.
 
