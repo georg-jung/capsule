@@ -250,8 +250,27 @@
     } catch (error) { toast(error.message); }
   }
 
+  function updateOfflineStatus() {
+    const status = $("#offline-status");
+    if (!status) return;
+    if (!state.online) {
+      if (state.library) {
+        status.textContent = "Using offline copy";
+        status.className = "offline-status ready";
+        status.removeAttribute("title");
+      } else {
+        status.textContent = "Offline copy incomplete";
+        status.className = "offline-status incomplete";
+      }
+    }
+  }
+
   async function synchronizeOffline() {
-    if (!("serviceWorker" in navigator) || !state.online) return;
+    if (!("serviceWorker" in navigator)) return;
+    if (!state.online) {
+      updateOfflineStatus();
+      return;
+    }
     const status = $("#offline-status");
     const files = libraryFiles();
     status.textContent = "Preparing offline copy…";
@@ -272,9 +291,14 @@
         status.removeAttribute("title");
       } else throw new Error(result.error || "Some files could not be cached.");
     } catch (error) {
-      status.textContent = "Offline copy incomplete";
-      status.className = "offline-status incomplete";
-      status.title = error.message;
+      const online = await refreshConnectivity();
+      if (!online && state.library) {
+        updateOfflineStatus();
+      } else {
+        status.textContent = "Offline copy incomplete";
+        status.className = "offline-status incomplete";
+        status.title = error.message;
+      }
     }
   }
 
@@ -284,6 +308,7 @@
     indicator.textContent = online ? "Online" : "Offline · read only";
     indicator.classList.toggle("offline", !online);
     for (const control of document.querySelectorAll("[data-write]")) control.disabled = !online;
+    updateOfflineStatus();
   }
 
   async function refreshConnectivity() {
@@ -294,11 +319,6 @@
       state.online = false;
     }
     updateConnectivity();
-    if (!state.online && state.library) {
-      const status = $("#offline-status");
-      status.textContent = "Using offline copy";
-      status.className = "offline-status ready";
-    }
     return state.online;
   }
 

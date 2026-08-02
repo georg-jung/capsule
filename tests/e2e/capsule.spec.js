@@ -132,6 +132,8 @@ test("complete private app lifecycle works online and offline", async ({ browser
   await secondContext.setOffline(true);
   await secondPage.reload();
   await expect(secondPage.locator("#file-summary")).toHaveText("3 files");
+  await expect(secondPage.locator("#offline-status")).toHaveText("Using offline copy");
+  await expect(secondPage.locator("#offline-status")).toHaveClass(/ready/);
   await expect(secondPage.getByRole("button", { name: "Add files" })).toBeDisabled();
   await secondPage.getByRole("link", { name: /alpha\.html/i }).click();
   await expect(secondPage.getByRole("heading", { name: "Alpha v2" })).toBeVisible();
