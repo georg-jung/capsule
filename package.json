@@ -1,0 +1,16 @@
+{
+  "name": "capsule-e2e",
+  "private": true,
+  "scripts": {
+    "pretest": "node scripts/e2e-clean.mjs",
+    "test": "playwright test",
+    "posttest": "node scripts/e2e-clean.mjs",
+    "pretest:e2e": "node scripts/e2e-clean.mjs",
+    "test:e2e": "playwright test",
+    "posttest:e2e": "node scripts/e2e-clean.mjs",
+    "test:e2e:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

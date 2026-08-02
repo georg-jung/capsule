@@ -1,0 +1,9 @@
+.git
+.github
+.data
+.tools
+node_modules
+playwright-report
+test-results
+coverage
+*.out

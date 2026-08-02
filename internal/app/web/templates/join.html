@@ -1,0 +1,25 @@
+{{define "join.html"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Join private app</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="capsule-mark" aria-hidden="true">C</div>
+    <h1>Join private app</h1>
+    <p>Register a passkey to become an owner of this private app.</p>
+    <form id="join-form" hidden>
+      <label>Your name<input name="personName" required maxlength="100" autocomplete="name"></label>
+      <button type="submit">Register owner passkey</button>
+    </form>
+    <p id="auth-status" class="status" role="status" aria-live="polite">Checking invite…</p>
+  </main>
+  <script src="/assets/auth.js" defer></script>
+</body>
+</html>
+{{end}}

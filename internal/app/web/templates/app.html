@@ -1,0 +1,67 @@
+{{define "app.html"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#171717">
+  <title>{{.SiteName}}</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+</head>
+<body class="app-page">
+  <header class="app-header">
+    <div class="brand">
+      <div class="capsule-mark small" aria-hidden="true">C</div>
+      <div><h1>{{.SiteName}}</h1><span id="connectivity" class="connectivity">Online</span></div>
+    </div>
+    <div class="header-actions">
+      <button id="install-button" class="secondary" type="button" hidden>Install</button>
+      <button id="settings-button" class="secondary" type="button">Manage</button>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <section id="drop-zone" class="drop-zone" aria-labelledby="upload-title">
+      <input id="file-input" type="file" multiple hidden>
+      <div>
+        <h2 id="upload-title">Add files</h2>
+        <p>Drop one or more standalone files here, or choose them from this device.</p>
+      </div>
+      <button id="choose-files" type="button" data-write>Choose files</button>
+    </section>
+
+    <section class="library" aria-labelledby="library-title">
+      <div class="section-heading">
+        <div><h2 id="library-title">Your files</h2><p id="file-summary">Loading…</p></div>
+        <span id="offline-status" class="offline-status">Preparing offline copy…</span>
+      </div>
+      <div id="file-grid" class="file-grid" aria-live="polite"></div>
+      <div id="empty-state" class="empty-state" hidden>
+        <h3>No files yet</h3><p>Upload a standalone HTML page to get started.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="dialog-heading"><div><h2>Manage Capsule</h2><p>Every registered passkey is an equal owner.</p></div><button class="icon-button secondary" value="close" aria-label="Close">×</button></form>
+    <section class="settings-section">
+      <h3>App name</h3>
+      <form id="site-form" class="inline-form"><input id="site-name" name="name" required maxlength="80"><button type="submit" data-write>Save</button></form>
+    </section>
+    <section class="settings-section">
+      <div class="row-between"><h3>Owners</h3><button id="invite-button" type="button" data-write>Invite owner</button></div>
+      <div id="invite-result" class="invite-result" hidden></div>
+      <div id="owner-list" class="owner-list"></div>
+    </section>
+    <section class="settings-section danger-zone">
+      <h3>Session</h3><button id="logout-button" class="danger" type="button" data-write>Log out on this device</button>
+    </section>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,28 @@
+services:
+  capsule:
+    image: ghcr.io/georg-jung/capsule:latest
+    restart: unless-stopped
+    ports:
+      - "${CAPSULE_BIND:-127.0.0.1:8080}:8080"
+    environment:
+      CAPSULE_ORIGIN: "${CAPSULE_ORIGIN:?Set CAPSULE_ORIGIN to the public HTTPS origin}"
+      CAPSULE_DATA_DIR: /data
+      CAPSULE_MAX_UPLOAD_MB: "${CAPSULE_MAX_UPLOAD_MB:-100}"
+    volumes:
+      - capsule-data:/data
+    healthcheck:
+      test: ["CMD", "/capsule", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  capsule-data:

@@ -1,0 +1,22 @@
+{{define "login.html"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Private app</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="capsule-mark" aria-hidden="true">C</div>
+    <h1>Private app</h1>
+    <p>This application is private and not intended for public use.</p>
+    <button id="login-button" type="button">Continue with a passkey</button>
+    <p id="auth-status" class="status" role="status" aria-live="polite"></p>
+  </main>
+  <script src="/assets/auth.js" defer></script>
+</body>
+</html>
+{{end}}
