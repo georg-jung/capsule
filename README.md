@@ -45,7 +45,7 @@ Two instances can run side by side using different origins, bind ports, Compose 
 
 ### Updating
 
-The `latest` image is published from `main` to `ghcr.io/georg-jung/capsule:latest`, alongside immutable `sha-*` tags and semver tags. Watchtower or another container replacement tool can follow `latest`; the SQLite schema and data volume persist across replacement.
+Only NBGV public-release tags publish `latest` and versioned images such as `1.0.0` and `1.0`. Every image also has an immutable `sha-*` tag. Watchtower or another container replacement tool can follow `latest`; ordinary pushes to `main` never move it. The SQLite schema and data volume persist across replacement.
 
 Back up the named Docker volume as a unit. SQLite uses WAL mode, so stop the container or use a volume-aware snapshot to obtain a consistent filesystem backup.
 
@@ -86,6 +86,23 @@ npm test
 ```
 
 The Playwright test builds and starts an isolated production container automatically. CI repeats Go, browser, and container smoke checks on every pull request.
+
+### Versioning and releases
+
+Nerdbank.GitVersioning is pinned as a repository-local .NET tool. The base version starts at `1.0`; NBGV adds a deterministic patch height and commit suffix to development builds. Only tags created from the computed version are public releases—there are no release branches.
+
+```sh
+dotnet tool restore
+dotnet nbgv get-version
+tag="$(dotnet nbgv tag --what-if)"
+dotnet nbgv tag
+git push origin main
+git push origin "$tag"
+```
+
+For the initial base line, `nbgv tag` creates `v1.0.0`. Pushing that tag publishes `latest`, `1.0.0`, `1.0`, and `sha-*` container tags, then creates the corresponding GitHub Release. To start a later minor or major line, run `dotnet nbgv set-version 1.1` (or `2.0`) and commit the resulting `version.json` change. Do not use `nbgv prepare-release`; Capsule has no release-branch flow.
+
+The container workflow may also be started manually. A manual run from an untagged commit publishes only `manual-*` and `sha-*` tags and does not create a public release or move `latest`.
 
 ## License
 

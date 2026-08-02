@@ -55,8 +55,19 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Set up .NET for NBGV
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore versioning tool
+        run: dotnet tool restore
+      - name: Calculate deterministic version
+        id: version
+        run: echo "semver=$(dotnet nbgv get-version -v SemVer2)" >> "$GITHUB_OUTPUT"
       - name: Build production image
-        run: docker build --build-arg VERSION=ci-${{ github.sha }} -t capsule:ci .
+        run: docker build --build-arg VERSION=${{ steps.version.outputs.semver }} -t capsule:ci .
       - name: Start container
         run: docker run --rm -d --name capsule-smoke -p 127.0.0.1:18081:8080 -e CAPSULE_ORIGIN=http://localhost:18081 capsule:ci
       - name: Wait for health
@@ -68,7 +79,7 @@ jobs:
           docker logs capsule-smoke
           exit 1
       - name: Verify image command
-        run: docker exec capsule-smoke /capsule version
+        run: test "$(docker exec capsule-smoke /capsule version)" = "${{ steps.version.outputs.semver }}"
       - name: Stop container
         if: always()
         run: docker stop capsule-smoke || true
