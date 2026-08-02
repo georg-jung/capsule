@@ -19,6 +19,15 @@ updates:
       test-dependencies:
         patterns: ["*"]
 
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: monthly
+      timezone: Europe/Berlin
+    groups:
+      versioning-tools:
+        patterns: ["*"]
+
   - package-ecosystem: docker
     directory: /
     schedule:
