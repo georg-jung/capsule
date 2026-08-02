@@ -22,7 +22,7 @@ input { width: 100%; margin-top: .4rem; padding: .75rem; border: 1px solid #cbc9
 label { display: block; margin: 1rem 0; font-weight: 600; text-align: left; }
 .auth-page { display: grid; place-items: center; padding: 1.5rem; }
 .auth-card { width: min(100%, 25rem); padding: 2rem; border: 1px solid #dedcd4; border-radius: 1.25rem; background: #fff; text-align: center; box-shadow: 0 1.2rem 4rem rgb(40 35 20 / .08); }
-.capsule-mark { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; margin: 0 auto 1.25rem; border-radius: .8rem; background: #20201e; color: #fff; font-weight: 800; }
+.capsule-mark { display: block; width: 2.75rem; height: 2.75rem; margin: 0 auto 1.25rem; }
 .status { min-height: 1.4em; color: #9d2d24; }
 .app-page { background: #f8f7f3; }
 .app-header { position: sticky; z-index: 10; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem clamp(1rem, 4vw, 3rem); border-bottom: 1px solid var(--border); background: rgb(248 247 243 / .9); backdrop-filter: blur(16px); }
@@ -79,7 +79,7 @@ dialog::backdrop { background: rgb(20 20 18 / .45); backdrop-filter: blur(3px); 
   :root { background: #111; color: #eee; --surface: #191919; --surface-muted: #292927; --border: #30302e; --text-muted: #aaa79f; --accent: #eee; }
   .auth-card { background: #191919; border-color: #30302e; }
   input { background: #111; border-color: #444; color: #eee; }
-  button, .capsule-mark { background: #eee; color: #111; }
+  button { background: #eee; color: #111; }
   .secondary { background: var(--surface-muted); color: inherit; }
   .danger { background: #9d332b; color: #fff; }
   .app-page, .app-header { background: rgb(17 17 17 / .92); }
