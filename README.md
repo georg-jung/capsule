@@ -69,7 +69,7 @@ Capsule has three deliberate trust boundaries:
 2. Uploaded HTML is trusted owner code. Native shared `localStorage` means it shares Capsule's origin and can act with the current owner's authority. Upload only files you trust.
 3. Offline files remain readable to the browser profile that synchronized them, even if the server later expires or revokes that session while the device is offline. Explicit logout clears Capsule's private caches; an unreachable offline device cannot receive server-side revocation.
 
-Sessions use random bearer tokens stored only as hashes, `HttpOnly`/`SameSite=Strict` cookies (`Secure` in production), exact-origin checks, and CSRF tokens. Invite secrets are placed after the URL fragment so they do not enter proxy logs or referrer headers; the browser exchanges and removes the fragment before registration.
+Sessions use random bearer tokens stored only as hashes, `HttpOnly` cookies (`Secure` and `__Host-` prefixed in production), exact-origin checks, and CSRF tokens. The session cookie is `SameSite=Lax` so an installed PWA's launch navigation carries it; the invite cookie stays `SameSite=Strict`. Mutations never rely on the cookie alone: each one also requires an exact `Origin` match and the CSRF token. Invite secrets are placed after the URL fragment so they do not enter proxy logs or referrer headers; the browser exchanges and removes the fragment before registration.
 
 ## Local development
 

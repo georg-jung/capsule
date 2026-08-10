@@ -387,4 +387,12 @@ func TestAuthenticatedRequestsSlideSessionExpiryAfterTwentyFourHours(t *testing.
 	if !sessionCookie.Expires.After(session.ExpiresAt) {
 		t.Fatalf("re-issued cookie expiry %v did not move past original %v", sessionCookie.Expires, session.ExpiresAt)
 	}
+	// Strict would be withheld from an installed PWA's launch navigation, so a
+	// cold start would show the login page despite an unexpired session.
+	if sessionCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("session cookie SameSite = %v, want Lax", sessionCookie.SameSite)
+	}
+	if !sessionCookie.HttpOnly {
+		t.Fatal("session cookie must stay HttpOnly")
+	}
 }

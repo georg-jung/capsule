@@ -128,6 +128,13 @@ func (s *Server) handleLogout(writer http.ResponseWriter, request *http.Request)
 	writeJSON(writer, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// The session cookie is Lax, not Strict, because an installed PWA launched
+// from the home screen navigates to start_url with no initiator, and Chrome
+// on Android withholds Strict cookies from that navigation: every cold start
+// would land on the login page while the cookie sat unexpired in the jar.
+// Lax only widens top-level GET navigation, which reaches no state-changing
+// endpoint; every mutation still requires an exact Origin match plus the CSRF
+// token, and cross-origin windows cannot read the responses they navigate to.
 func (s *Server) setSessionCookie(writer http.ResponseWriter, session store.SessionCredentials) {
 	http.SetCookie(writer, &http.Cookie{
 		Name:     s.sessionCookie,
@@ -135,7 +142,7 @@ func (s *Server) setSessionCookie(writer http.ResponseWriter, session store.Sess
 		Path:     "/",
 		Secure:   s.secureCookies,
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
 }
