@@ -76,7 +76,10 @@ VALUES (?, ?, ?, ?, ?)`, hashToken(token), ownerID, csrf, formatTime(createdAt),
 	return session, nil
 }
 
-func (s *Store) Authenticate(ctx context.Context, token string) (Authenticated, error) {
+// Authenticate resolves a session token. When extend is false the session is
+// validated but its expiry is left alone, so a request the caller does not
+// consider a genuine sign of life cannot postpone inactivity expiry.
+func (s *Store) Authenticate(ctx context.Context, token string, extend bool) (Authenticated, error) {
 	var authenticated Authenticated
 	var ownerID string
 	var expiresAt sql.NullString
@@ -109,7 +112,8 @@ SELECT owner_id, csrf_token, expires_at FROM sessions WHERE token_hash = ?`, has
 	}
 
 	now := s.now().UTC()
-	if authenticated.ExpiresAt.Before(now.Add(sessionTTL - sessionRenewAfter)) {
+	renewalDue := authenticated.ExpiresAt.Before(now.Add(sessionTTL - sessionRenewAfter))
+	if extend && renewalDue {
 		newExpiresAt := now.Add(sessionTTL)
 		if _, execErr := s.db.ExecContext(ctx, `
 UPDATE sessions SET expires_at = ? WHERE token_hash = ?`, formatTime(newExpiresAt), hashToken(token)); execErr == nil {
