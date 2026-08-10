@@ -36,10 +36,17 @@ async function deleteStaleShellCaches() {
 }
 
 let syncQueue = Promise.resolve();
+// Bumped by CLEAR_PRIVATE so queued sync jobs that would start after a
+// logout abort instead of reopening and repopulating the cleared caches.
+let clearEpoch = 0;
 
 self.addEventListener("message", event => {
   if (event.data?.type === "SYNC_PRIVATE") {
-    const run = syncQueue.then(() => syncPrivate(event.data.urls || []));
+    const epoch = clearEpoch;
+    const run = syncQueue.then(() => {
+      if (epoch !== clearEpoch) throw new Error("Offline caches were cleared.");
+      return syncPrivate(event.data.urls || []);
+    });
     syncQueue = run.catch(() => {});
     event.waitUntil(run.then(
       () => event.ports[0]?.postMessage({ ok: true }),
@@ -47,6 +54,7 @@ self.addEventListener("message", event => {
     ));
   }
   if (event.data?.type === "CLEAR_PRIVATE") {
+    clearEpoch++;
     event.waitUntil((async () => {
       for (const name of await caches.keys()) {
         if (name.startsWith("capsule-")) await caches.delete(name);

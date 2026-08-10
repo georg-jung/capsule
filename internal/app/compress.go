@@ -119,13 +119,17 @@ func acceptsGzip(header string) bool {
 
 func (s *Server) compressResponses(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet ||
-			strings.HasPrefix(request.URL.Path, "/content/") ||
-			!acceptsGzip(request.Header.Get("Accept-Encoding")) {
+		if request.Method != http.MethodGet || strings.HasPrefix(request.URL.Path, "/content/") {
 			next.ServeHTTP(writer, request)
 			return
 		}
+		// Vary applies to the identity representation too, so caches never
+		// reuse it for a request that negotiated a different encoding.
 		writer.Header().Add("Vary", "Accept-Encoding")
+		if !acceptsGzip(request.Header.Get("Accept-Encoding")) {
+			next.ServeHTTP(writer, request)
+			return
+		}
 		compressed := &compressingWriter{ResponseWriter: writer}
 		defer compressed.close()
 		next.ServeHTTP(compressed, request)

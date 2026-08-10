@@ -235,6 +235,9 @@ func TestCompressionAndConditionalRequests(t *testing.T) {
 	if plain.Code != http.StatusOK || plain.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("plain asset status = %d, encoding = %q", plain.Code, plain.Header().Get("Content-Encoding"))
 	}
+	if plain.Header().Get("Vary") != "Accept-Encoding" {
+		t.Fatalf("identity response must carry Vary: headers = %v", plain.Header())
+	}
 	etag := plain.Header().Get("ETag")
 	if etag == "" || plain.Header().Get("Cache-Control") != "no-cache" {
 		t.Fatalf("asset caching headers = %v", plain.Header())
@@ -259,8 +262,8 @@ func TestCompressionAndConditionalRequests(t *testing.T) {
 	}
 
 	declined := get("/assets/app.js", map[string]string{"Accept-Encoding": "identity;q=1, gzip;q=0"})
-	if declined.Code != http.StatusOK || declined.Header().Get("Content-Encoding") != "" {
-		t.Fatalf("gzip;q=0 still compressed: headers = %v", declined.Header())
+	if declined.Code != http.StatusOK || declined.Header().Get("Content-Encoding") != "" || declined.Header().Get("Vary") != "Accept-Encoding" {
+		t.Fatalf("gzip;q=0 still compressed or missing Vary: headers = %v", declined.Header())
 	}
 
 	conditional := get("/assets/app.js", map[string]string{"Accept-Encoding": "gzip", "If-None-Match": etag})
