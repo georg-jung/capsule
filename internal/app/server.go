@@ -143,6 +143,20 @@ func (s *Server) render(writer http.ResponseWriter, name string, data pageData) 
 	}
 }
 
+// extendsSession reports whether a request counts as the owner using their
+// own instance, and may therefore slide the session's expiry forward.
+//
+// The session cookie is Lax, so a hostile page can navigate the browser to an
+// authenticated GET and have the cookie ride along. Such a navigation must not
+// postpone inactivity expiry, or an occasional visit to an attacker's page
+// would keep a session alive forever. Chrome labels it `Sec-Fetch-Site:
+// cross-site`; a home-screen PWA launch sends `none`, and the app's own
+// requests send `same-origin`, so both keep renewing. A browser that omits the
+// header renews as before: failing open costs an unwanted sign-in at worst.
+func extendsSession(request *http.Request) bool {
+	return request.Header.Get("Sec-Fetch-Site") != "cross-site"
+}
+
 // session authenticates the request's session cookie and also returns the
 // raw cookie token so callers can re-issue the cookie when the session was
 // extended.
@@ -151,7 +165,7 @@ func (s *Server) session(request *http.Request) (store.Authenticated, string, er
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return store.Authenticated{}, "", store.ErrUnauthenticated
 	}
-	authenticated, err := s.store.Authenticate(request.Context(), cookie.Value)
+	authenticated, err := s.store.Authenticate(request.Context(), cookie.Value, extendsSession(request))
 	if err != nil {
 		return store.Authenticated{}, "", err
 	}

@@ -342,13 +342,20 @@ func TestAuthenticatedRequestsSlideSessionExpiryAfterTwentyFourHours(t *testing.
 		t.Fatal(err)
 	}
 
-	requestLibrary := func() *httptest.ResponseRecorder {
+	requestLibraryFrom := func(fetchSite string) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/library", nil)
 		request.AddCookie(&http.Cookie{Name: "capsule_session", Value: session.Token})
+		if fetchSite != "" {
+			request.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
 		return response
+	}
+	requestLibrary := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return requestLibraryFrom("")
 	}
 
 	// Within the 24h renewal window, the session cookie must not be re-issued.
@@ -361,8 +368,18 @@ func TestAuthenticatedRequestsSlideSessionExpiryAfterTwentyFourHours(t *testing.
 		t.Fatalf("early request re-issued cookies: %v", early.Result().Cookies())
 	}
 
-	// Past the 24h renewal window, the session cookie must be re-issued with a later expiry.
+	// A Lax cookie rides along on cross-site navigations, so those must not
+	// postpone inactivity expiry even once the renewal window has opened.
 	now = now.Add(2 * time.Hour) // 25h since creation
+	foreign := requestLibraryFrom("cross-site")
+	if foreign.Code != http.StatusOK {
+		t.Fatalf("cross-site library status = %d", foreign.Code)
+	}
+	if len(foreign.Result().Cookies()) != 0 {
+		t.Fatalf("cross-site request renewed the session: %v", foreign.Result().Cookies())
+	}
+
+	// Past the 24h renewal window, the session cookie must be re-issued with a later expiry.
 	renewed := requestLibrary()
 	if renewed.Code != http.StatusOK {
 		t.Fatalf("renewed library status = %d", renewed.Code)

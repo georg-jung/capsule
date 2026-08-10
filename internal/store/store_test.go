@@ -412,7 +412,7 @@ func TestSessionSlidingRenewal(t *testing.T) {
 
 	// (a) Authenticating within 24h of creation must not slide the expiry.
 	now = now.Add(23 * time.Hour)
-	authenticated, err := repo.Authenticate(context.Background(), session.Token)
+	authenticated, err := repo.Authenticate(context.Background(), session.Token, true)
 	if err != nil {
 		t.Fatalf("authenticate within renewal window: %v", err)
 	}
@@ -423,9 +423,19 @@ func TestSessionSlidingRenewal(t *testing.T) {
 		t.Fatalf("expiry after early authenticate = %v, want unchanged %v", authenticated.ExpiresAt, wantInitialExpiry)
 	}
 
-	// (b) Advancing the clock past the renewal threshold slides the expiry forward.
+	// (b) Past the threshold, a request that does not count as a sign of life
+	// authenticates but leaves the expiry where it was.
 	now = now.Add(2 * time.Hour) // 25h since creation, > sessionRenewAfter (24h)
-	authenticated, err = repo.Authenticate(context.Background(), session.Token)
+	authenticated, err = repo.Authenticate(context.Background(), session.Token, false)
+	if err != nil {
+		t.Fatalf("authenticate without extending: %v", err)
+	}
+	if authenticated.Extended || !authenticated.ExpiresAt.Equal(wantInitialExpiry) {
+		t.Fatalf("non-extending authenticate moved expiry to %v (extended = %v)", authenticated.ExpiresAt, authenticated.Extended)
+	}
+
+	// (c) The same request with extend set slides the expiry forward.
+	authenticated, err = repo.Authenticate(context.Background(), session.Token, true)
 	if err != nil {
 		t.Fatalf("authenticate past renewal window: %v", err)
 	}
@@ -437,9 +447,9 @@ func TestSessionSlidingRenewal(t *testing.T) {
 		t.Fatalf("expiry after renewal = %v, want %v", authenticated.ExpiresAt, wantRenewedExpiry)
 	}
 
-	// (c) Without further contact, the session still expires 90 days after the last renewal.
+	// (d) Without further contact, the session still expires 90 days after the last renewal.
 	now = wantRenewedExpiry.Add(time.Nanosecond)
-	if _, err := repo.Authenticate(context.Background(), session.Token); !errors.Is(err, store.ErrUnauthenticated) {
+	if _, err := repo.Authenticate(context.Background(), session.Token, true); !errors.Is(err, store.ErrUnauthenticated) {
 		t.Fatalf("authenticate after expiry error = %v, want ErrUnauthenticated", err)
 	}
 }
@@ -519,17 +529,17 @@ func TestOwnerDeletionInvalidatesSessionsAndRecoveryPreservesFiles(t *testing.T)
 	if err := repo.DeleteOtherOwner(context.Background(), first.ID, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Authenticate(context.Background(), secondSession.Token); !errors.Is(err, store.ErrUnauthenticated) {
+	if _, err := repo.Authenticate(context.Background(), secondSession.Token, true); !errors.Is(err, store.ErrUnauthenticated) {
 		t.Fatalf("deleted owner's session error = %v, want ErrUnauthenticated", err)
 	}
-	if _, err := repo.Authenticate(context.Background(), firstSession.Token); err != nil {
+	if _, err := repo.Authenticate(context.Background(), firstSession.Token, true); err != nil {
 		t.Fatalf("current owner's session: %v", err)
 	}
 
 	if err := repo.ResetAuth(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Authenticate(context.Background(), firstSession.Token); !errors.Is(err, store.ErrUnauthenticated) {
+	if _, err := repo.Authenticate(context.Background(), firstSession.Token, true); !errors.Is(err, store.ErrUnauthenticated) {
 		t.Fatalf("session after recovery error = %v, want ErrUnauthenticated", err)
 	}
 	instance, err := repo.Instance(context.Background())
