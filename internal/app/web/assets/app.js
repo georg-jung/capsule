@@ -148,19 +148,31 @@
   function uploadRequest(data, describeProgress) {
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
+      // Stall watchdog instead of a flat timeout: legitimate uploads on slow
+      // links may take arbitrarily long, but progress events should keep
+      // arriving. Once the body is sent, allow the server a longer window.
+      let stallTimer;
+      const armStallTimer = ms => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => request.abort(), ms);
+      };
       request.open("POST", "/api/files");
       request.responseType = "json";
       if (state.csrf) request.setRequestHeader("X-CSRF-Token", state.csrf);
       request.upload.addEventListener("progress", event => {
+        armStallTimer(60000);
         if (event.lengthComputable) describeProgress(Math.round((event.loaded / event.total) * 100));
       });
+      request.upload.addEventListener("loadend", () => armStallTimer(300000));
       request.addEventListener("load", () => {
+        clearTimeout(stallTimer);
         const body = request.response || {};
         if ((request.status >= 200 && request.status < 300) || request.status === 207) resolve(body);
         else reject(new Error(body.error || "The upload could not be completed."));
       });
-      request.addEventListener("error", () => reject(new Error("The upload failed. Check your connection.")));
-      request.addEventListener("abort", () => reject(new Error("The upload was interrupted.")));
+      request.addEventListener("error", () => { clearTimeout(stallTimer); reject(new Error("The upload failed. Check your connection.")); });
+      request.addEventListener("abort", () => { clearTimeout(stallTimer); reject(new Error("The upload stalled and was stopped. Check your connection and try again.")); });
+      armStallTimer(60000);
       request.send(data);
     });
   }
@@ -343,12 +355,22 @@
     }
   }
 
+  function markBusy(control) {
+    control.dataset.busy = "";
+    control.disabled = true;
+  }
+
+  function clearBusy(control) {
+    delete control.dataset.busy;
+    control.disabled = !state.online;
+  }
+
   function updateConnectivity() {
     const online = state.online;
     const indicator = $("#connectivity");
     indicator.textContent = online ? "Online" : "Offline · read only";
     indicator.classList.toggle("offline", !online);
-    for (const control of document.querySelectorAll("[data-write]")) control.disabled = !online;
+    for (const control of document.querySelectorAll("[data-write]")) control.disabled = !online || control.dataset.busy !== undefined;
     updateOfflineStatus();
   }
 
@@ -450,19 +472,19 @@
     event.preventDefault();
     const button = event.currentTarget.querySelector("button[type=submit]") || event.currentTarget.querySelector("button");
     if (button?.disabled) return;
-    if (button) button.disabled = true;
+    if (button) markBusy(button);
     try {
       await fetchJSON("/api/site", { method: "POST", body: JSON.stringify({ name: $("#site-name").value }) });
       location.reload();
     } catch (error) {
       toast(error.message);
-      if (button) button.disabled = false;
+      if (button) clearBusy(button);
     }
   });
   $("#invite-button").addEventListener("click", async event => {
     const button = event.currentTarget;
     if (button.disabled) return;
-    button.disabled = true;
+    markBusy(button);
     try {
       const invite = await fetchJSON("/api/invites", { method: "POST", body: "{}" });
       const result = $("#invite-result");
@@ -476,13 +498,13 @@
     } catch (error) {
       toast(error.message);
     } finally {
-      button.disabled = !state.online;
+      clearBusy(button);
     }
   });
   $("#logout-button").addEventListener("click", async event => {
     const button = event.currentTarget;
     if (button.disabled) return;
-    button.disabled = true;
+    markBusy(button);
     if ("serviceWorker" in navigator) {
       const registration = await navigator.serviceWorker.getRegistration("/").catch(() => null);
       if (registration?.active) {

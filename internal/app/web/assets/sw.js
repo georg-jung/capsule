@@ -139,13 +139,17 @@ async function networkFirstContent(request, cacheName) {
       const headers = new Headers(request.headers);
       if (etag) headers.set("If-None-Match", etag);
       const req = new Request(request, { headers });
-      const response = await fetchWithTimeout(req, {}, REVALIDATE_TIMEOUT);
-      if (response.status === 304) return cached;
-      if (response.ok) {
-        await cache.put(request, response.clone());
+      const revalidate = (async () => {
+        const response = await fetch(req);
+        if (response.status === 304) return cached;
+        if (response.ok) await cache.put(request, response.clone());
         return response;
-      }
-      return response;
+      })();
+      const winner = await Promise.race([
+        revalidate.catch(() => null),
+        new Promise(resolve => setTimeout(resolve, REVALIDATE_TIMEOUT, null)),
+      ]);
+      return winner || cached;
     } catch {
       return cached;
     }
@@ -158,13 +162,16 @@ async function networkFirstContent(request, cacheName) {
 async function networkFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
-  try {
-    const response = await fetchWithTimeout(request, {}, cached ? REVALIDATE_TIMEOUT : 0);
+  const network = (async () => {
+    const response = await fetch(request);
     const url = new URL(response.url);
     if (response.ok && !(url.pathname === "/" && new URL(request.url).pathname === "/app")) await cache.put(request, response.clone());
     return response;
-  } catch (error) {
-    if (cached) return cached;
-    throw error;
-  }
+  })();
+  if (!cached) return network;
+  const winner = await Promise.race([
+    network.catch(() => null),
+    new Promise(resolve => setTimeout(resolve, REVALIDATE_TIMEOUT, null)),
+  ]);
+  return winner || cached;
 }
