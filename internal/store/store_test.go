@@ -1,7 +1,10 @@
 package store_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"io"
@@ -372,6 +375,112 @@ func TestFilesReplaceByNameAndKeepStableIdentity(t *testing.T) {
 	}
 	if objects := countObjects(t, dataDir); objects != 0 {
 		t.Fatalf("object count after deletion = %d, want 0", objects)
+	}
+}
+
+func TestCompressibleUploadsGetGzipSidecarsThatShareTheObjectLifecycle(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	repo, err := store.Open(context.Background(), store.Config{DataDir: dataDir, MaxUploadSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+
+	body := "<!doctype html><title>capsule</title>" + strings.Repeat("<p>a highly compressible paragraph</p>", 200)
+	page, _, err := repo.PutFile(context.Background(), "page.html", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if objects := countObjects(t, dataDir); objects != 2 {
+		t.Fatalf("object count after a compressible upload = %d, want 2 (object plus sidecar)", objects)
+	}
+
+	compressed, metadata, err := repo.OpenContent(context.Background(), page.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compressed.Close()
+	if compressed.Encoding != "gzip" || compressed.Size >= metadata.Size {
+		t.Fatalf("compressed content encoding = %q, size = %d, raw size = %d", compressed.Encoding, compressed.Size, metadata.Size)
+	}
+	reader, err := gzip.NewReader(compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decoded) != body {
+		t.Fatal("sidecar does not decode to the uploaded bytes")
+	}
+
+	identity, _, err := repo.OpenContent(context.Background(), page.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer identity.Close()
+	if identity.Encoding != "" || identity.Size != metadata.Size {
+		t.Fatalf("identity content encoding = %q, size = %d, want %d", identity.Encoding, identity.Size, metadata.Size)
+	}
+
+	// Random bytes only grow under gzip, so no sidecar is kept for them.
+	noise := make([]byte, 64<<10)
+	if _, err := rand.Read(noise); err != nil {
+		t.Fatal(err)
+	}
+	blob, _, err := repo.PutFile(context.Background(), "blob.bin", bytes.NewReader(noise))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if objects := countObjects(t, dataDir); objects != 3 {
+		t.Fatalf("object count after an incompressible upload = %d, want 3", objects)
+	}
+	incompressible, _, err := repo.OpenContent(context.Background(), blob.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incompressible.Close()
+	if incompressible.Encoding != "" {
+		t.Fatalf("incompressible content encoding = %q, want identity", incompressible.Encoding)
+	}
+
+	if err := repo.DeleteFile(context.Background(), page.ID); err != nil {
+		t.Fatal(err)
+	}
+	if objects := countObjects(t, dataDir); objects != 1 {
+		t.Fatalf("object count after deletion = %d, want 1; the sidecar should go with its object", objects)
+	}
+
+	// A sidecar left behind by a crash between the two renames is an orphan
+	// like any other object, and startup pruning must reclaim it. Scratch
+	// files from an upload that never committed are reclaimed the same way.
+	orphan := filepath.Join(dataDir, "objects", page.SHA256[:2], page.SHA256+".gz")
+	if err := os.WriteFile(orphan, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	strandedTemp := filepath.Join(dataDir, "tmp", "upload-123456.gz")
+	if err := os.WriteFile(strandedTemp, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.Open(context.Background(), store.Config{DataDir: dataDir, MaxUploadSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphaned sidecar survived startup pruning: %v", err)
+	}
+	if _, err := os.Stat(strandedTemp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stranded temporary upload survived startup pruning: %v", err)
+	}
+	if objects := countObjects(t, dataDir); objects != 1 {
+		t.Fatalf("object count after pruning = %d, want 1", objects)
 	}
 }
 

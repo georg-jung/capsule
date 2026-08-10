@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -220,9 +221,9 @@ func TestCompressionAndConditionalRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	get := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+	send := func(method, path string, headers map[string]string) *httptest.ResponseRecorder {
 		t.Helper()
-		request := httptest.NewRequest(http.MethodGet, "http://localhost:8080"+path, nil)
+		request := httptest.NewRequest(method, "http://localhost:8080"+path, nil)
 		for name, value := range headers {
 			request.Header.Set(name, value)
 		}
@@ -230,6 +231,10 @@ func TestCompressionAndConditionalRequests(t *testing.T) {
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
 		return response
+	}
+	get := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		return send(http.MethodGet, path, headers)
 	}
 
 	plain := get("/assets/app.js", nil)
@@ -292,15 +297,126 @@ func TestCompressionAndConditionalRequests(t *testing.T) {
 		t.Fatalf("conditional sw.js status = %d, body length = %d", workerConditional.Code, workerConditional.Body.Len())
 	}
 
+	// Too small to have earned a gzip sidecar, so it still serves the raw
+	// object and keeps full range support.
 	content := get("/content/"+file.ID+"/page.html", map[string]string{"Accept-Encoding": "gzip"})
 	if content.Code != http.StatusOK || content.Header().Get("Content-Encoding") != "" {
-		t.Fatalf("content response must stay identity-encoded: status = %d, headers = %v", content.Code, content.Header())
+		t.Fatalf("small content must stay identity-encoded: status = %d, headers = %v", content.Code, content.Header())
 	}
 	rangeResponse := get("/content/"+file.ID+"/page.html", map[string]string{"Accept-Encoding": "gzip", "Range": "bytes=0-8"})
 	if rangeResponse.Code != http.StatusPartialContent ||
 		rangeResponse.Header().Get("Content-Encoding") != "" ||
 		rangeResponse.Body.String() != "<!doctype" {
 		t.Fatalf("range status = %d, headers = %v, body = %q", rangeResponse.Code, rangeResponse.Header(), rangeResponse.Body.String())
+	}
+
+	body := "<!doctype html><title>capsule</title>" + strings.Repeat("<p>a highly compressible paragraph</p>", 200)
+	large, _, err := repository.PutFile(context.Background(), "large.html", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeURL := "/content/" + large.ID + "/large.html"
+	largeIdentity := get(largeURL, nil)
+	if largeIdentity.Code != http.StatusOK ||
+		largeIdentity.Header().Get("Content-Encoding") != "" ||
+		largeIdentity.Body.String() != body {
+		t.Fatalf("identity content status = %d, headers = %v", largeIdentity.Code, largeIdentity.Header())
+	}
+
+	largeCompressed := get(largeURL, map[string]string{"Accept-Encoding": "gzip"})
+	if largeCompressed.Code != http.StatusOK ||
+		largeCompressed.Header().Get("Content-Encoding") != "gzip" ||
+		largeCompressed.Header().Get("Vary") != "Accept-Encoding" {
+		t.Fatalf("compressed content status = %d, headers = %v", largeCompressed.Code, largeCompressed.Header())
+	}
+	// Captured before the reader below drains the recorder's buffer.
+	compressedLength := largeCompressed.Body.Len()
+	if compressedLength >= len(body) {
+		t.Fatalf("compressed content is not smaller: %d vs %d bytes", compressedLength, len(body))
+	}
+	if got := largeCompressed.Header().Get("Content-Length"); got != strconv.Itoa(compressedLength) {
+		t.Fatalf("compressed Content-Length = %q, body = %d bytes", got, compressedLength)
+	}
+	contentReader, err := gzip.NewReader(largeCompressed.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedContent, err := io.ReadAll(contentReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decodedContent) != body {
+		t.Fatal("decompressed content does not match the uploaded file")
+	}
+
+	// Both encodings answer to the file digest, which is what the service
+	// worker sends when it revalidates its offline copy.
+	contentETag := `"` + large.SHA256 + `"`
+	if largeCompressed.Header().Get("ETag") != contentETag || largeIdentity.Header().Get("ETag") != contentETag {
+		t.Fatalf("content ETags = %q and %q, want %q",
+			largeCompressed.Header().Get("ETag"), largeIdentity.Header().Get("ETag"), contentETag)
+	}
+	conditionalContent := get(largeURL, map[string]string{"Accept-Encoding": "gzip", "If-None-Match": contentETag})
+	if conditionalContent.Code != http.StatusNotModified || conditionalContent.Body.Len() != 0 {
+		t.Fatalf("conditional content status = %d, body length = %d", conditionalContent.Code, conditionalContent.Body.Len())
+	}
+
+	// Both representations must answer If-Modified-Since alike; only the
+	// identity branch gets that from http.ServeContent for free.
+	modified := large.UpdatedAt.UTC().Format(http.TimeFormat)
+	if largeCompressed.Header().Get("Last-Modified") != modified || largeIdentity.Header().Get("Last-Modified") != modified {
+		t.Fatalf("Last-Modified = %q and %q, want %q",
+			largeCompressed.Header().Get("Last-Modified"), largeIdentity.Header().Get("Last-Modified"), modified)
+	}
+	for _, encoding := range []string{"gzip", "identity"} {
+		unmodified := get(largeURL, map[string]string{"Accept-Encoding": encoding, "If-Modified-Since": modified})
+		if unmodified.Code != http.StatusNotModified || unmodified.Body.Len() != 0 {
+			t.Fatalf("If-Modified-Since with %s status = %d, body length = %d", encoding, unmodified.Code, unmodified.Body.Len())
+		}
+	}
+
+	// Preconditions must not depend on whether the client can decode gzip:
+	// http.ServeContent rejects these on the identity representation, so the
+	// compressed one has to as well.
+	stale := large.UpdatedAt.Add(-time.Hour).UTC().Format(http.TimeFormat)
+	for _, encoding := range []string{"gzip", "identity"} {
+		mismatch := get(largeURL, map[string]string{"Accept-Encoding": encoding, "If-Match": `"not-the-file"`})
+		if mismatch.Code != http.StatusPreconditionFailed {
+			t.Fatalf("If-Match mismatch with %s status = %d, want 412", encoding, mismatch.Code)
+		}
+		outdated := get(largeURL, map[string]string{"Accept-Encoding": encoding, "If-Unmodified-Since": stale})
+		if outdated.Code != http.StatusPreconditionFailed {
+			t.Fatalf("stale If-Unmodified-Since with %s status = %d, want 412", encoding, outdated.Code)
+		}
+		matched := get(largeURL, map[string]string{"Accept-Encoding": encoding, "If-Match": contentETag})
+		if matched.Code != http.StatusOK {
+			t.Fatalf("If-Match hit with %s status = %d, want 200", encoding, matched.Code)
+		}
+	}
+
+	// A GET route also serves HEAD; the body is discarded, so the compressed
+	// branch must not read the sidecar off disk to produce it.
+	head := send(http.MethodHead, largeURL, map[string]string{"Accept-Encoding": "gzip"})
+	if head.Code != http.StatusOK || head.Body.Len() != 0 ||
+		head.Header().Get("Content-Encoding") != "gzip" ||
+		head.Header().Get("Content-Length") != strconv.Itoa(compressedLength) {
+		t.Fatalf("HEAD status = %d, body length = %d, headers = %v", head.Code, head.Body.Len(), head.Header())
+	}
+
+	// A name that does not belong to the identifier is a 404, and the object
+	// it opened on the way there must not leak.
+	mismatched := get("/content/"+large.ID+"/page.html", map[string]string{"Accept-Encoding": "gzip"})
+	if mismatched.Code != http.StatusNotFound {
+		t.Fatalf("mismatched content name status = %d, want 404", mismatched.Code)
+	}
+
+	// Asking for a byte range gives up compression so the offsets still refer
+	// to the file's own bytes.
+	largeRange := get(largeURL, map[string]string{"Accept-Encoding": "gzip", "Range": "bytes=0-8"})
+	if largeRange.Code != http.StatusPartialContent ||
+		largeRange.Header().Get("Content-Encoding") != "" ||
+		largeRange.Body.String() != "<!doctype" {
+		t.Fatalf("compressible range status = %d, headers = %v, body = %q", largeRange.Code, largeRange.Header(), largeRange.Body.String())
 	}
 }
 

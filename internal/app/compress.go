@@ -5,17 +5,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-)
 
-var compressibleTypes = []string{
-	"text/html",
-	"text/css",
-	"text/javascript",
-	"text/plain",
-	"application/json",
-	"application/manifest+json",
-	"image/svg+xml",
-}
+	"github.com/georg-jung/capsule/internal/store"
+)
 
 type compressingWriter struct {
 	http.ResponseWriter
@@ -33,15 +25,7 @@ func (w *compressingWriter) decide(status int) {
 	if header.Get("Content-Encoding") != "" {
 		return
 	}
-	contentType := header.Get("Content-Type")
-	compressible := false
-	for _, candidate := range compressibleTypes {
-		if strings.HasPrefix(contentType, candidate) {
-			compressible = true
-			break
-		}
-	}
-	if !compressible {
+	if !store.CompressibleContentType(header.Get("Content-Type")) {
 		return
 	}
 	header.Del("Content-Length")
@@ -117,9 +101,17 @@ func acceptsGzip(header string) bool {
 	return wildcardQuality > 0
 }
 
+// servesPrecompressed reports whether a path is handled by code that picks its
+// own representation from bytes compressed ahead of time. Those handlers set
+// Content-Encoding and Vary themselves, so the middleware stays out of the way
+// instead of wrapping a response it would only pass through.
+func servesPrecompressed(path string) bool {
+	return path == "/sw.js" || strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/content/")
+}
+
 func (s *Server) compressResponses(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet || strings.HasPrefix(request.URL.Path, "/content/") {
+		if request.Method != http.MethodGet || servesPrecompressed(request.URL.Path) {
 			next.ServeHTTP(writer, request)
 			return
 		}

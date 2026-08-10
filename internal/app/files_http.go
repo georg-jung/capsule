@@ -6,6 +6,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/georg-jung/capsule/internal/store"
 )
@@ -87,7 +89,15 @@ func (s *Server) handleUpload(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) handleContent(writer http.ResponseWriter, request *http.Request) {
-	opened, file, err := s.store.OpenFile(request.Context(), request.PathValue("id"))
+	// A byte range only means anything against the raw object, so a request
+	// that asks for one gives up the compressed representation.
+	allowGzip := request.Header.Get("Range") == "" && acceptsGzip(request.Header.Get("Accept-Encoding"))
+	content, file, err := s.store.OpenContent(request.Context(), request.PathValue("id"), allowGzip)
+	// Deferred before the name check, which rejects a request that already
+	// opened the object and would otherwise leak the handle.
+	if err == nil {
+		defer content.Close()
+	}
 	if errors.Is(err, store.ErrNotFound) || file.Name != request.PathValue("name") {
 		http.NotFound(writer, request)
 		return
@@ -96,14 +106,70 @@ func (s *Server) handleContent(writer http.ResponseWriter, request *http.Request
 		writeProblem(writer, http.StatusInternalServerError, "Could not open this file.")
 		return
 	}
-	defer opened.Close()
 
+	etag := `"` + file.SHA256 + `"`
 	writer.Header().Set("Content-Type", file.ContentType)
 	writer.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": file.Name}))
 	writer.Header().Set("Cache-Control", "private, no-cache")
-	writer.Header().Set("ETag", `"`+file.SHA256+`"`)
+	// Both representations decode to the same bytes and so share one entity
+	// tag; Vary is what keeps a cache from handing the compressed copy to a
+	// client that cannot decode it. The offline service worker relies on the
+	// tag matching the file's SHA-256 to revalidate its cached copy.
+	writer.Header().Set("ETag", etag)
+	writer.Header().Add("Vary", "Accept-Encoding")
 	writer.Header().Set("Referrer-Policy", "no-referrer")
-	http.ServeContent(writer, request, file.Name, file.UpdatedAt, opened)
+	if content.Encoding == "" {
+		http.ServeContent(writer, request, file.Name, file.UpdatedAt, content)
+		return
+	}
+	// The identity branch gets its validator from http.ServeContent; the
+	// compressed branch sets one so both representations answer conditional
+	// requests the same way.
+	writer.Header().Set("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
+	if status := conditionalStatus(request, etag, file.UpdatedAt); status != 0 {
+		writer.WriteHeader(status)
+		return
+	}
+	writer.Header().Set("Content-Encoding", content.Encoding)
+	writer.Header().Set("Content-Length", strconv.FormatInt(content.Size, 10))
+	// A GET route also matches HEAD, and the server discards the body for it.
+	// Reading the sidecar anyway would cost a full-file disk read per request.
+	if request.Method == http.MethodHead {
+		return
+	}
+	_, _ = io.Copy(writer, content)
+}
+
+// conditionalStatus evaluates the request's preconditions in the order RFC
+// 9110 requires and reports the status to send instead of the body, or zero to
+// serve it. http.ServeContent does this for the identity representation; the
+// compressed one must not answer differently merely because the client can
+// decode gzip.
+//
+// Entity tags are compared weakly throughout. If-Match calls for strong
+// comparison, but this resource is read-only, so the leniency can only ever
+// serve a representation where a strict server would refuse.
+func conditionalStatus(request *http.Request, etag string, modtime time.Time) int {
+	modtime = modtime.Truncate(time.Second)
+	if match := request.Header.Get("If-Match"); match != "" {
+		if !etagListMatches(match, etag) {
+			return http.StatusPreconditionFailed
+		}
+	} else if since, err := http.ParseTime(request.Header.Get("If-Unmodified-Since")); err == nil {
+		if modtime.After(since) {
+			return http.StatusPreconditionFailed
+		}
+	}
+	if none := request.Header.Get("If-None-Match"); none != "" {
+		if etagListMatches(none, etag) {
+			return http.StatusNotModified
+		}
+		return 0
+	}
+	if since, err := http.ParseTime(request.Header.Get("If-Modified-Since")); err == nil && !modtime.After(since) {
+		return http.StatusNotModified
+	}
+	return 0
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
