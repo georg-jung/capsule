@@ -3,6 +3,7 @@ package app
 import (
 	"compress/gzip"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -84,11 +85,43 @@ func (w *compressingWriter) close() {
 	}
 }
 
+// acceptsGzip reports whether the Accept-Encoding header allows gzip,
+// honoring quality values: an explicit gzip entry wins over a wildcard, and
+// q=0 on either declares the coding unacceptable.
+func acceptsGzip(header string) bool {
+	gzipQuality, wildcardQuality := -1.0, -1.0
+	for _, part := range strings.Split(header, ",") {
+		fields := strings.Split(part, ";")
+		name := strings.ToLower(strings.TrimSpace(fields[0]))
+		if name != "gzip" && name != "*" {
+			continue
+		}
+		quality := 1.0
+		for _, param := range fields[1:] {
+			param = strings.ToLower(strings.ReplaceAll(param, " ", ""))
+			if value, ok := strings.CutPrefix(param, "q="); ok {
+				if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+					quality = parsed
+				}
+			}
+		}
+		if name == "*" {
+			wildcardQuality = quality
+		} else {
+			gzipQuality = quality
+		}
+	}
+	if gzipQuality >= 0 {
+		return gzipQuality > 0
+	}
+	return wildcardQuality > 0
+}
+
 func (s *Server) compressResponses(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet ||
 			strings.HasPrefix(request.URL.Path, "/content/") ||
-			!strings.Contains(request.Header.Get("Accept-Encoding"), "gzip") {
+			!acceptsGzip(request.Header.Get("Accept-Encoding")) {
 			next.ServeHTTP(writer, request)
 			return
 		}

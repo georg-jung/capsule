@@ -15,13 +15,25 @@ self.addEventListener("install", event => {
 });
 
 self.addEventListener("activate", event => {
-  event.waitUntil((async () => {
-    for (const name of await caches.keys()) {
-      if (name.startsWith("capsule-shell-") && name !== SHELL_CACHE) await caches.delete(name);
-    }
-    await self.clients.claim();
-  })());
+  event.waitUntil(deleteStaleShellCaches().then(() => self.clients.claim()));
 });
+
+async function shellComplete(shell) {
+  for (const url of SHELL_URLS) {
+    if (!(await shell.match(url))) return false;
+  }
+  return true;
+}
+
+// Older shell caches are kept as an offline fallback until the current one
+// holds every shell URL, so a partial install never destroys a complete copy.
+async function deleteStaleShellCaches() {
+  const shell = await caches.open(SHELL_CACHE);
+  if (!(await shellComplete(shell))) return;
+  for (const name of await caches.keys()) {
+    if (name.startsWith("capsule-shell-") && name !== SHELL_CACHE) await caches.delete(name);
+  }
+}
 
 let syncQueue = Promise.resolve();
 
@@ -94,6 +106,7 @@ async function syncPrivate(contentURLs) {
   for (const request of await privateCache.keys()) {
     if (new URL(request.url).pathname.startsWith("/content/") && !allowed.has(request.url)) await privateCache.delete(request);
   }
+  await deleteStaleShellCaches();
   if (failures.length) throw new Error(`Could not cache ${failures.length} item${failures.length === 1 ? "" : "s"}.`);
 }
 
@@ -102,15 +115,15 @@ self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/content/")) {
-    event.respondWith(networkFirstContent(event.request, PRIVATE_CACHE));
+    event.respondWith(networkFirstContent(event, PRIVATE_CACHE));
     return;
   }
   if (url.pathname === "/api/library") {
-    event.respondWith(networkFirst(event.request, PRIVATE_CACHE));
+    event.respondWith(networkFirst(event, PRIVATE_CACHE));
     return;
   }
   if (url.pathname === "/app") {
-    event.respondWith(networkFirst(event.request, SHELL_CACHE));
+    event.respondWith(networkFirst(event, SHELL_CACHE));
     return;
   }
   if (SHELL_URLS.includes(url.pathname)) {
@@ -121,7 +134,7 @@ self.addEventListener("fetch", event => {
 
 async function cacheFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
-  const cached = await cache.match(request);
+  const cached = (await cache.match(request)) || (await caches.match(request));
   if (cached) return cached;
   const response = await fetch(request);
   const url = new URL(response.url);
@@ -129,7 +142,8 @@ async function cacheFirst(request, cacheName) {
   return response;
 }
 
-async function networkFirstContent(request, cacheName) {
+async function networkFirstContent(event, cacheName) {
+  const request = event.request;
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
   if (cached) {
@@ -145,6 +159,7 @@ async function networkFirstContent(request, cacheName) {
         if (response.ok) await cache.put(request, response.clone());
         return response;
       })();
+      event.waitUntil(revalidate.catch(() => {}));
       const winner = await Promise.race([
         revalidate.catch(() => null),
         new Promise(resolve => setTimeout(resolve, REVALIDATE_TIMEOUT, null)),
@@ -159,9 +174,10 @@ async function networkFirstContent(request, cacheName) {
   return response;
 }
 
-async function networkFirst(request, cacheName) {
+async function networkFirst(event, cacheName) {
+  const request = event.request;
   const cache = await caches.open(cacheName);
-  const cached = await cache.match(request);
+  const cached = (await cache.match(request)) || (await caches.match(request));
   const network = (async () => {
     const response = await fetch(request);
     const url = new URL(response.url);
@@ -169,6 +185,7 @@ async function networkFirst(request, cacheName) {
     return response;
   })();
   if (!cached) return network;
+  event.waitUntil(network.catch(() => {}));
   const winner = await Promise.race([
     network.catch(() => null),
     new Promise(resolve => setTimeout(resolve, REVALIDATE_TIMEOUT, null)),

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -178,5 +179,123 @@ func TestAuthenticatedUploadRequiresOriginAndCSRFAndServesCompleteFiles(t *testi
 	server.ServeHTTP(contentResponse, contentRequest)
 	if contentResponse.Code != http.StatusPartialContent || contentResponse.Body.String() != "first" {
 		t.Fatalf("range status = %d, body = %q", contentResponse.Code, contentResponse.Body.String())
+	}
+}
+
+func TestCompressionAndConditionalRequests(t *testing.T) {
+	t.Parallel()
+
+	repository, err := store.Open(context.Background(), store.Config{DataDir: t.TempDir(), MaxUploadSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	owner := store.Owner{
+		ID:             "owner-one",
+		UserHandle:     []byte("owner-one-handle"),
+		CredentialID:   []byte("credential-one"),
+		PersonName:     "Georg",
+		PasskeyName:    "Windows Hello",
+		CredentialJSON: []byte(`{"id":"credential-one"}`),
+	}
+	if err := repository.Claim(context.Background(), "Secret tools", owner); err != nil {
+		t.Fatal(err)
+	}
+	file, _, err := repository.PutFile(context.Background(), "page.html", strings.NewReader("<!doctype html><h1>compressible page body</h1>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.CreateSession(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Origin: "http://localhost:8080", RPID: "localhost", MaxUploadSize: 1 << 20}
+	authenticator, err := auth.NewManager(config.Origin, config.RPID, repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(config, repository, authenticator)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://localhost:8080"+path, nil)
+		for name, value := range headers {
+			request.Header.Set(name, value)
+		}
+		request.AddCookie(&http.Cookie{Name: "capsule_session", Value: session.Token})
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		return response
+	}
+
+	plain := get("/assets/app.js", nil)
+	if plain.Code != http.StatusOK || plain.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("plain asset status = %d, encoding = %q", plain.Code, plain.Header().Get("Content-Encoding"))
+	}
+	etag := plain.Header().Get("ETag")
+	if etag == "" || plain.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("asset caching headers = %v", plain.Header())
+	}
+
+	compressed := get("/assets/app.js", map[string]string{"Accept-Encoding": "gzip"})
+	if compressed.Code != http.StatusOK ||
+		compressed.Header().Get("Content-Encoding") != "gzip" ||
+		compressed.Header().Get("Vary") != "Accept-Encoding" {
+		t.Fatalf("compressed asset status = %d, headers = %v", compressed.Code, compressed.Header())
+	}
+	reader, err := gzip.NewReader(compressed.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decompressed, plain.Body.Bytes()) {
+		t.Fatalf("gzip body does not match identity body: %d vs %d bytes", len(decompressed), plain.Body.Len())
+	}
+
+	declined := get("/assets/app.js", map[string]string{"Accept-Encoding": "identity;q=1, gzip;q=0"})
+	if declined.Code != http.StatusOK || declined.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("gzip;q=0 still compressed: headers = %v", declined.Header())
+	}
+
+	conditional := get("/assets/app.js", map[string]string{"Accept-Encoding": "gzip", "If-None-Match": etag})
+	if conditional.Code != http.StatusNotModified || conditional.Body.Len() != 0 {
+		t.Fatalf("conditional asset status = %d, body length = %d", conditional.Code, conditional.Body.Len())
+	}
+
+	worker := get("/sw.js", map[string]string{"Accept-Encoding": "gzip"})
+	if worker.Code != http.StatusOK || worker.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("service worker status = %d, headers = %v", worker.Code, worker.Header())
+	}
+	workerReader, err := gzip.NewReader(worker.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerScript, err := io.ReadAll(workerReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(workerScript), "__CACHE_VERSION__") {
+		t.Fatal("service worker cache version placeholder was not replaced")
+	}
+	workerConditional := get("/sw.js", map[string]string{"If-None-Match": worker.Header().Get("ETag")})
+	if workerConditional.Code != http.StatusNotModified || workerConditional.Body.Len() != 0 {
+		t.Fatalf("conditional sw.js status = %d, body length = %d", workerConditional.Code, workerConditional.Body.Len())
+	}
+
+	content := get("/content/"+file.ID+"/page.html", map[string]string{"Accept-Encoding": "gzip"})
+	if content.Code != http.StatusOK || content.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("content response must stay identity-encoded: status = %d, headers = %v", content.Code, content.Header())
+	}
+	rangeResponse := get("/content/"+file.ID+"/page.html", map[string]string{"Accept-Encoding": "gzip", "Range": "bytes=0-8"})
+	if rangeResponse.Code != http.StatusPartialContent ||
+		rangeResponse.Header().Get("Content-Encoding") != "" ||
+		rangeResponse.Body.String() != "<!doctype" {
+		t.Fatalf("range status = %d, headers = %v, body = %q", rangeResponse.Code, rangeResponse.Header(), rangeResponse.Body.String())
 	}
 }
