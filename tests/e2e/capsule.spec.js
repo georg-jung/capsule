@@ -139,6 +139,19 @@ test("complete private app lifecycle works online and offline", async ({ browser
   await expect(blockedPage.locator("#file-summary")).toHaveText("3 files");
   await blockedPage.unroute("**/api/library");
 
+  // Another authenticated payload carries a valid CSRF token but no file
+  // list. Accepting it would render an empty library and make the offline
+  // sync prune every cached file, so it must be rejected as well.
+  await blockedPage.route("**/api/library", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ owners: [], csrfToken: "valid-looking-token" }),
+  }));
+  await blockedPage.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(blockedPage.locator("#toast")).toContainText("The library could not be loaded.");
+  await expect(blockedPage.locator("#file-summary")).toHaveText("3 files");
+  await blockedPage.unroute("**/api/library");
+
   await blockedPage.getByRole("button", { name: "Manage" }).click();
   await blockedPage.getByRole("button", { name: "Log out on this device" }).click();
   await expect(blockedPage).toHaveURL("/");

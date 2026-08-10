@@ -132,11 +132,14 @@
 
   async function loadLibrary() {
     const body = await fetchJSON("/api/library");
-    if (typeof body.csrfToken !== "string" || body.csrfToken === "") {
+    // A response that is merely valid JSON is not enough: any other
+    // authenticated payload that reached this URL by accident would carry a
+    // CSRF token but no file list, and an empty list makes the offline sync
+    // prune every cached file. Require the full library shape instead.
+    if (typeof body.csrfToken !== "string" || body.csrfToken === "" || !Array.isArray(body.files)) {
       throw new Error("The library could not be loaded.");
     }
     state.library = body;
-    if (!Array.isArray(state.library.files)) state.library.files = [];
     state.csrf = state.library.csrfToken;
     $("#site-name").value = state.library.siteName;
     renderFiles();
@@ -323,8 +326,11 @@
   }
 
   // Best-effort: ask the browser not to evict our offline caches under
-  // storage pressure. Failures here must never affect the visible status
-  // text, only (optionally) its tooltip.
+  // storage pressure. Requested after every synchronization attempt, not only
+  // after a reported success, because a sync that outlives this page's
+  // timeout still finishes in the worker and leaves a cache worth keeping.
+  // Failures here must never affect the visible status text, only the tooltip
+  // of the status element passed in, if any.
   async function ensurePersistentStorage(status) {
     try {
       if (!navigator.storage?.persisted) return;
@@ -333,7 +339,7 @@
         state.persistenceRequested = true;
         persisted = await navigator.storage.persist();
       }
-      if (!persisted) status.title = "Your browser may delete the offline copy if disk space runs low.";
+      if (!persisted && status) status.title = "Your browser may delete the offline copy if disk space runs low.";
     } catch {
       // Ignore: persistence support is inconsistent across browsers.
     }
@@ -380,6 +386,7 @@
         await ensurePersistentStorage(status);
       } else throw new Error(result.error || "Some files could not be cached.");
     } catch (error) {
+      await ensurePersistentStorage(null);
       const online = await refreshConnectivity();
       if (!online && state.library) {
         updateOfflineStatus();
