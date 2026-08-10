@@ -153,7 +153,11 @@ func writeStaticAsset(writer http.ResponseWriter, request *http.Request, asset s
 }
 
 func requestETagMatches(request *http.Request, etag string) bool {
-	for _, candidate := range strings.Split(request.Header.Get("If-None-Match"), ",") {
+	return etagListMatches(request.Header.Get("If-None-Match"), etag)
+}
+
+func etagListMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
 		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
 		if candidate != "" && (candidate == etag || candidate == "*") {
 			return true

@@ -122,31 +122,54 @@ func (s *Server) handleContent(writer http.ResponseWriter, request *http.Request
 		http.ServeContent(writer, request, file.Name, file.UpdatedAt, content)
 		return
 	}
-	// The identity branch gets these from http.ServeContent; the compressed
-	// branch sets them so both representations answer conditional requests
-	// the same way.
-	writer.Header().Set("Content-Encoding", content.Encoding)
+	// The identity branch gets its validator from http.ServeContent; the
+	// compressed branch sets one so both representations answer conditional
+	// requests the same way.
 	writer.Header().Set("Last-Modified", file.UpdatedAt.UTC().Format(http.TimeFormat))
-	if requestETagMatches(request, etag) || notModifiedSince(request, file.UpdatedAt) {
-		writer.WriteHeader(http.StatusNotModified)
+	if status := conditionalStatus(request, etag, file.UpdatedAt); status != 0 {
+		writer.WriteHeader(status)
 		return
 	}
+	writer.Header().Set("Content-Encoding", content.Encoding)
 	writer.Header().Set("Content-Length", strconv.FormatInt(content.Size, 10))
+	// A GET route also matches HEAD, and the server discards the body for it.
+	// Reading the sidecar anyway would cost a full-file disk read per request.
+	if request.Method == http.MethodHead {
+		return
+	}
 	_, _ = io.Copy(writer, content)
 }
 
-// notModifiedSince evaluates If-Modified-Since, which RFC 9110 only consults
-// when the request carries no If-None-Match. Last-Modified has one-second
-// resolution, so the stored timestamp is truncated before comparison.
-func notModifiedSince(request *http.Request, modtime time.Time) bool {
-	if request.Header.Get("If-None-Match") != "" {
-		return false
+// conditionalStatus evaluates the request's preconditions in the order RFC
+// 9110 requires and reports the status to send instead of the body, or zero to
+// serve it. http.ServeContent does this for the identity representation; the
+// compressed one must not answer differently merely because the client can
+// decode gzip.
+//
+// Entity tags are compared weakly throughout. If-Match calls for strong
+// comparison, but this resource is read-only, so the leniency can only ever
+// serve a representation where a strict server would refuse.
+func conditionalStatus(request *http.Request, etag string, modtime time.Time) int {
+	modtime = modtime.Truncate(time.Second)
+	if match := request.Header.Get("If-Match"); match != "" {
+		if !etagListMatches(match, etag) {
+			return http.StatusPreconditionFailed
+		}
+	} else if since, err := http.ParseTime(request.Header.Get("If-Unmodified-Since")); err == nil {
+		if modtime.After(since) {
+			return http.StatusPreconditionFailed
+		}
 	}
-	since, err := http.ParseTime(request.Header.Get("If-Modified-Since"))
-	if err != nil {
-		return false
+	if none := request.Header.Get("If-None-Match"); none != "" {
+		if etagListMatches(none, etag) {
+			return http.StatusNotModified
+		}
+		return 0
 	}
-	return !modtime.Truncate(time.Second).After(since)
+	if since, err := http.ParseTime(request.Header.Get("If-Modified-Since")); err == nil && !modtime.After(since) {
+		return http.StatusNotModified
+	}
+	return 0
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
