@@ -1,5 +1,5 @@
 (() => {
-  const state = { library: null, admin: null, csrf: "", deferredInstall: null, online: navigator.onLine, query: "", sort: "name" };
+  const state = { library: null, admin: null, csrf: "", deferredInstall: null, online: navigator.onLine, query: "", sort: "name", persistenceRequested: false };
   const $ = selector => document.querySelector(selector);
 
   function fileURL(file) {
@@ -131,8 +131,15 @@
   }
 
   async function loadLibrary() {
-    state.library = await fetchJSON("/api/library");
-    if (!Array.isArray(state.library.files)) state.library.files = [];
+    const body = await fetchJSON("/api/library");
+    // A response that is merely valid JSON is not enough: any other
+    // authenticated payload that reached this URL by accident would carry a
+    // CSRF token but no file list, and an empty list makes the offline sync
+    // prune every cached file. Require the full library shape instead.
+    if (typeof body.csrfToken !== "string" || body.csrfToken === "" || !Array.isArray(body.files)) {
+      throw new Error("The library could not be loaded.");
+    }
+    state.library = body;
     state.csrf = state.library.csrfToken;
     $("#site-name").value = state.library.siteName;
     renderFiles();
@@ -318,6 +325,40 @@
     }
   }
 
+  // Best-effort: ask the browser not to evict our offline caches under
+  // storage pressure. Requested after every synchronization attempt, not only
+  // after a reported success, because a sync that outlives this page's
+  // timeout still finishes in the worker and leaves a cache worth keeping.
+  // Failures here must never affect the visible status text, only the tooltip
+  // of the status element passed in, if any.
+  async function ensurePersistentStorage(status) {
+    try {
+      if (!navigator.storage?.persisted) return;
+      let persisted = await navigator.storage.persisted();
+      if (!persisted && navigator.storage.persist && !state.persistenceRequested) {
+        state.persistenceRequested = true;
+        persisted = await navigator.storage.persist();
+      }
+      if (!persisted && status) status.title = "Your browser may delete the offline copy if disk space runs low.";
+    } catch {
+      // Ignore: persistence support is inconsistent across browsers.
+    }
+  }
+
+  function isIOSDevice() {
+    return /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1);
+  }
+
+  function isStandaloneDisplay() {
+    return matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  }
+
+  function updateIOSInstallHint() {
+    const hint = $("#ios-install-hint");
+    if (!hint) return;
+    hint.hidden = !(isIOSDevice() && !isStandaloneDisplay());
+  }
+
   async function synchronizeOffline() {
     if (!("serviceWorker" in navigator)) return;
     if (!state.online) {
@@ -342,8 +383,10 @@
         status.textContent = files.length ? "Ready offline" : "No files to cache";
         status.className = files.length ? "offline-status ready" : "offline-status";
         status.removeAttribute("title");
+        await ensurePersistentStorage(status);
       } else throw new Error(result.error || "Some files could not be cached.");
     } catch (error) {
+      await ensurePersistentStorage(null);
       const online = await refreshConnectivity();
       if (!online && state.library) {
         updateOfflineStatus();
@@ -528,5 +571,6 @@
   $("#install-button").addEventListener("click", async () => { await state.deferredInstall?.prompt(); state.deferredInstall = null; $("#install-button").hidden = true; });
 
   updateConnectivity();
+  updateIOSInstallHint();
   refreshConnectivity().then(() => loadLibrary()).catch(error => toast(error.message));
 })();

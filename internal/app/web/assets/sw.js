@@ -10,6 +10,18 @@ function fetchWithTimeout(input, init, timeoutMs) {
   return fetch(input, timeoutMs ? { ...init, signal: AbortSignal.timeout(timeoutMs) } : init);
 }
 
+// Refuses to cache a response that could poison the offline copy: one that
+// was redirected (the served bytes may not match the requested URL) or whose
+// final URL resolved cross-origin. For /api/library, also require a JSON
+// Content-Type so a captive portal or misconfigured proxy returning an HTML
+// page with a 200 status can't be stored as the file index.
+function cacheable(response, pathname) {
+  if (!response.ok || response.redirected) return false;
+  if (response.url && new URL(response.url).origin !== self.location.origin) return false;
+  if (pathname === "/api/library" && !(response.headers.get("Content-Type") || "").includes("application/json")) return false;
+  return true;
+}
+
 self.addEventListener("install", event => {
   event.waitUntil(precacheShell().catch(() => {}).then(() => self.skipWaiting()));
 });
@@ -65,7 +77,7 @@ self.addEventListener("message", event => {
 });
 
 function shellResponseUsable(url, response) {
-  return response.ok && !(url === "/app" && new URL(response.url).pathname !== "/app");
+  return cacheable(response, url) && !(url === "/app" && new URL(response.url).pathname !== "/app");
 }
 
 async function precacheShell() {
@@ -94,7 +106,7 @@ async function syncPrivate(contentURLs) {
   if (!(await privateCache.match("/api/library"))) {
     try {
       const library = await fetchWithTimeout("/api/library", { credentials: "same-origin" }, SYNC_SHELL_TIMEOUT);
-      if (!library.ok) throw new Error();
+      if (!cacheable(library, "/api/library")) throw new Error();
       await privateCache.put("/api/library", library);
     } catch {
       failures.push("the file index");
@@ -105,7 +117,7 @@ async function syncPrivate(contentURLs) {
     if (await privateCache.match(url)) continue;
     try {
       const response = await fetchWithTimeout(url, { credentials: "same-origin" }, SYNC_CONTENT_TIMEOUT);
-      if (!response.ok) throw new Error();
+      if (!cacheable(response, new URL(url, self.location.origin).pathname)) throw new Error();
       await privateCache.put(url, response);
     } catch {
       failures.push(url);
@@ -145,8 +157,8 @@ async function cacheFirst(request, cacheName) {
   const cached = (await cache.match(request)) || (await caches.match(request));
   if (cached) return cached;
   const response = await fetch(request);
-  const url = new URL(response.url);
-  if (response.ok && !(url.pathname === "/" && new URL(request.url).pathname === "/app")) await cache.put(request, response.clone());
+  const requestPath = new URL(request.url).pathname;
+  if (cacheable(response, requestPath) && !(new URL(response.url).pathname === "/" && requestPath === "/app")) await cache.put(request, response.clone());
   return response;
 }
 
@@ -164,7 +176,7 @@ async function networkFirstContent(event, cacheName) {
       const revalidate = (async () => {
         const response = await fetch(req);
         if (response.status === 304) return cached;
-        if (response.ok) await cache.put(request, response.clone());
+        if (cacheable(response, new URL(request.url).pathname)) await cache.put(request, response.clone());
         return response;
       })();
       event.waitUntil(revalidate.catch(() => {}));
@@ -178,7 +190,7 @@ async function networkFirstContent(event, cacheName) {
     }
   }
   const response = await fetch(request);
-  if (response.ok) await cache.put(request, response.clone());
+  if (cacheable(response, new URL(request.url).pathname)) await cache.put(request, response.clone());
   return response;
 }
 
@@ -188,8 +200,8 @@ async function networkFirst(event, cacheName) {
   const cached = (await cache.match(request)) || (await caches.match(request));
   const network = (async () => {
     const response = await fetch(request);
-    const url = new URL(response.url);
-    if (response.ok && !(url.pathname === "/" && new URL(request.url).pathname === "/app")) await cache.put(request, response.clone());
+    const requestPath = new URL(request.url).pathname;
+    if (cacheable(response, requestPath) && !(new URL(response.url).pathname === "/" && requestPath === "/app")) await cache.put(request, response.clone());
     return response;
   })();
   if (!cached) return network;

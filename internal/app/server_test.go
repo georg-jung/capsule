@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/georg-jung/capsule/internal/auth"
 	"github.com/georg-jung/capsule/internal/store"
@@ -300,5 +301,90 @@ func TestCompressionAndConditionalRequests(t *testing.T) {
 		rangeResponse.Header().Get("Content-Encoding") != "" ||
 		rangeResponse.Body.String() != "<!doctype" {
 		t.Fatalf("range status = %d, headers = %v, body = %q", rangeResponse.Code, rangeResponse.Header(), rangeResponse.Body.String())
+	}
+}
+
+func TestAuthenticatedRequestsSlideSessionExpiryAfterTwentyFourHours(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	repository, err := store.Open(context.Background(), store.Config{
+		DataDir: t.TempDir(),
+		Now:     func() time.Time { return clock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	owner := store.Owner{
+		ID:             "owner-one",
+		UserHandle:     []byte("owner-one-handle"),
+		CredentialID:   []byte("credential-one"),
+		PersonName:     "Georg",
+		PasskeyName:    "Windows Hello",
+		CredentialJSON: []byte(`{"id":"credential-one"}`),
+	}
+	if err := repository.Claim(context.Background(), "Secret tools", owner); err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.CreateSession(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Origin: "http://localhost:8080", RPID: "localhost", MaxUploadSize: 1 << 20}
+	authenticator, err := auth.NewManager(config.Origin, config.RPID, repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(config, repository, authenticator)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestLibrary := func() *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/library", nil)
+		request.AddCookie(&http.Cookie{Name: "capsule_session", Value: session.Token})
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		return response
+	}
+
+	// Within the 24h renewal window, the session cookie must not be re-issued.
+	now = now.Add(23 * time.Hour)
+	early := requestLibrary()
+	if early.Code != http.StatusOK {
+		t.Fatalf("early library status = %d", early.Code)
+	}
+	if len(early.Result().Cookies()) != 0 {
+		t.Fatalf("early request re-issued cookies: %v", early.Result().Cookies())
+	}
+
+	// Past the 24h renewal window, the session cookie must be re-issued with a later expiry.
+	now = now.Add(2 * time.Hour) // 25h since creation
+	renewed := requestLibrary()
+	if renewed.Code != http.StatusOK {
+		t.Fatalf("renewed library status = %d", renewed.Code)
+	}
+	cookies := renewed.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == "capsule_session" {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("expected a re-issued session cookie, got %v", cookies)
+	}
+	if sessionCookie.Value != session.Token {
+		t.Fatalf("re-issued cookie token = %q, want unchanged %q", sessionCookie.Value, session.Token)
+	}
+	wantExpiry := now.Add(90 * 24 * time.Hour)
+	if !sessionCookie.Expires.Equal(wantExpiry) {
+		t.Fatalf("re-issued cookie expiry = %v, want %v", sessionCookie.Expires, wantExpiry)
+	}
+	if !sessionCookie.Expires.After(session.ExpiresAt) {
+		t.Fatalf("re-issued cookie expiry %v did not move past original %v", sessionCookie.Expires, session.ExpiresAt)
 	}
 }
