@@ -24,19 +24,30 @@
     return Array.isArray(state.library?.files) ? state.library.files : [];
   }
 
-  function toast(message) {
+  function toast(message, options = {}) {
     const element = $("#toast");
     element.textContent = message;
     element.hidden = false;
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => { element.hidden = true; }, 4500);
+    if (!options.sticky) toast.timer = setTimeout(() => { element.hidden = true; }, 4500);
   }
 
   async function fetchJSON(url, options = {}) {
-    const headers = { ...(options.headers || {}) };
-    if (state.csrf && options.method && options.method !== "GET") headers["X-CSRF-Token"] = state.csrf;
-    if (options.body && !(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-    const response = await fetch(url, { credentials: "same-origin", ...options, headers });
+    const { timeoutMs = 20000, ...request } = options;
+    const headers = { ...(request.headers || {}) };
+    if (state.csrf && request.method && request.method !== "GET") headers["X-CSRF-Token"] = state.csrf;
+    if (request.body && !(request.body instanceof FormData)) headers["Content-Type"] = "application/json";
+    let response;
+    try {
+      response = await fetch(url, {
+        credentials: "same-origin",
+        ...request,
+        headers,
+        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+      });
+    } catch (error) {
+      throw new Error(error.name === "TimeoutError" ? "The request timed out. Check your connection." : "The request failed. Check your connection.");
+    }
     const body = await response.json().catch(() => ({}));
     if (!response.ok && response.status !== 207) throw new Error(body.error || "The request could not be completed.");
     return body;
@@ -134,19 +145,49 @@
     renderOwners();
   }
 
+  function uploadRequest(data, describeProgress) {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", "/api/files");
+      request.responseType = "json";
+      if (state.csrf) request.setRequestHeader("X-CSRF-Token", state.csrf);
+      request.upload.addEventListener("progress", event => {
+        if (event.lengthComputable) describeProgress(Math.round((event.loaded / event.total) * 100));
+      });
+      request.addEventListener("load", () => {
+        const body = request.response || {};
+        if ((request.status >= 200 && request.status < 300) || request.status === 207) resolve(body);
+        else reject(new Error(body.error || "The upload could not be completed."));
+      });
+      request.addEventListener("error", () => reject(new Error("The upload failed. Check your connection.")));
+      request.addEventListener("abort", () => reject(new Error("The upload was interrupted.")));
+      request.send(data);
+    });
+  }
+
   async function uploadFiles(files) {
     if (!state.online || !files.length) return;
+    if (state.uploading) {
+      toast("An upload is already in progress.");
+      return;
+    }
     if ($("#upload-dialog").open) $("#upload-dialog").close();
     const data = new FormData();
     for (const file of files) data.append("files", file, file.name);
-    toast(`Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}…`);
-    const result = await fetchJSON("/api/files", { method: "POST", body: data });
-    const failures = result.results.filter(item => item.error);
-    const replacements = result.results.filter(item => item.replaced).length;
-    await loadLibrary();
-    $("#file-input").value = "";
-    if (failures.length) toast(`${failures.length} upload${failures.length === 1 ? "" : "s"} failed: ${failures[0].error}`);
-    else toast(`${result.results.length} file${result.results.length === 1 ? "" : "s"} uploaded${replacements ? `, ${replacements} replaced` : ""}.`);
+    const label = files.length === 1 ? files[0].name : `${files.length} files`;
+    state.uploading = true;
+    toast(`Uploading ${label}…`, { sticky: true });
+    try {
+      const result = await uploadRequest(data, percent => toast(`Uploading ${label}… ${percent}%`, { sticky: true }));
+      const failures = result.results.filter(item => item.error);
+      const replacements = result.results.filter(item => item.replaced).length;
+      await loadLibrary();
+      $("#file-input").value = "";
+      if (failures.length) toast(`${failures.length} upload${failures.length === 1 ? "" : "s"} failed: ${failures[0].error}`);
+      else toast(`${result.results.length} file${result.results.length === 1 ? "" : "s"} uploaded${replacements ? `, ${replacements} replaced` : ""}.`);
+    } finally {
+      state.uploading = false;
+    }
   }
 
   async function renameFile(file) {
@@ -311,15 +352,27 @@
     updateOfflineStatus();
   }
 
-  async function refreshConnectivity() {
-    try {
-      const response = await fetch("/healthz", { cache: "no-store", credentials: "same-origin" });
-      state.online = response.ok;
-    } catch {
-      state.online = false;
-    }
-    updateConnectivity();
-    return state.online;
+  function refreshConnectivity() {
+    if (state.connectivityProbe) return state.connectivityProbe;
+    state.connectivityProbe = (async () => {
+      try {
+        const response = await fetch("/healthz", { cache: "no-store", credentials: "same-origin", signal: AbortSignal.timeout(5000) });
+        state.online = response.ok;
+      } catch {
+        state.online = false;
+      }
+      updateConnectivity();
+      return state.online;
+    })().finally(() => { state.connectivityProbe = null; });
+    return state.connectivityProbe;
+  }
+
+  function probeConnectivity() {
+    if (document.visibilityState !== "visible") return;
+    const wasOnline = state.online;
+    refreshConnectivity().then(online => {
+      if (online && !wasOnline) loadLibrary().catch(error => toast(error.message));
+    });
   }
 
   function openUploadDialog() {
@@ -395,12 +448,21 @@
   });
   $("#site-form").addEventListener("submit", async event => {
     event.preventDefault();
+    const button = event.currentTarget.querySelector("button[type=submit]") || event.currentTarget.querySelector("button");
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
     try {
       await fetchJSON("/api/site", { method: "POST", body: JSON.stringify({ name: $("#site-name").value }) });
       location.reload();
-    } catch (error) { toast(error.message); }
+    } catch (error) {
+      toast(error.message);
+      if (button) button.disabled = false;
+    }
   });
-  $("#invite-button").addEventListener("click", async () => {
+  $("#invite-button").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
     try {
       const invite = await fetchJSON("/api/invites", { method: "POST", body: "{}" });
       const result = $("#invite-result");
@@ -411,9 +473,16 @@
       copy.type = "button"; copy.className = "secondary"; copy.textContent = "Copy invite link";
       copy.addEventListener("click", async () => { await navigator.clipboard.writeText(invite.url); toast("Invite link copied."); });
       result.append(text, copy);
-    } catch (error) { toast(error.message); }
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      button.disabled = !state.online;
+    }
   });
-  $("#logout-button").addEventListener("click", async () => {
+  $("#logout-button").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
     if ("serviceWorker" in navigator) {
       const registration = await navigator.serviceWorker.getRegistration("/").catch(() => null);
       if (registration?.active) {
@@ -426,11 +495,13 @@
         await cleared;
       }
     }
-    try { await fetchJSON("/auth/logout", { method: "POST", body: "{}" }); } finally { location.assign("/"); }
+    try { await fetchJSON("/auth/logout", { method: "POST", body: "{}", timeoutMs: 10000 }); } finally { location.assign("/"); }
   });
 
   addEventListener("online", () => { refreshConnectivity().then(online => { if (online) loadLibrary().catch(error => toast(error.message)); }); });
   addEventListener("offline", () => { state.online = false; updateConnectivity(); });
+  addEventListener("visibilitychange", () => probeConnectivity());
+  setInterval(probeConnectivity, 30000);
   addEventListener("beforeinstallprompt", event => { event.preventDefault(); state.deferredInstall = event; $("#install-button").hidden = false; });
   $("#install-button").addEventListener("click", async () => { await state.deferredInstall?.prompt(); state.deferredInstall = null; $("#install-button").hidden = true; });
 

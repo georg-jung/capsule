@@ -2,16 +2,16 @@ package app
 
 import "net/http"
 
-func (s *Server) handleServiceWorker(writer http.ResponseWriter, _ *http.Request) {
-	script, err := webFiles.ReadFile("web/assets/sw.js")
-	if err != nil {
-		http.Error(writer, "service worker unavailable", http.StatusInternalServerError)
-		return
-	}
+func (s *Server) handleServiceWorker(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Service-Worker-Allowed", "/")
-	_, _ = writer.Write(script)
+	writer.Header().Set("ETag", s.swETag)
+	if requestETagMatches(request, s.swETag) {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = writer.Write(s.swScript)
 }
 
 func (s *Server) handleManifest(writer http.ResponseWriter, request *http.Request) {

@@ -28,6 +28,9 @@ type Server struct {
 	joinCookie     string
 	secureCookies  bool
 	authBeginLimit *tokenBucket
+	swScript       []byte
+	swETag         string
+	assetETags     map[string]string
 }
 
 type pageData struct {
@@ -52,6 +55,9 @@ func NewServer(config Config, repository *store.Store, authenticator *auth.Manag
 		joinCookie:     "capsule_join",
 		authBeginLimit: newTokenBucket(30, time.Minute, nil),
 	}
+	if err := server.prepareStaticAssets(); err != nil {
+		return nil, err
+	}
 	if parsed, parseErr := url.Parse(config.Origin); parseErr == nil && parsed.Scheme == "https" {
 		server.secureCookies = true
 		server.sessionCookie = "__Host-capsule_session"
@@ -67,7 +73,7 @@ func NewServer(config Config, repository *store.Store, authenticator *auth.Manag
 	if err != nil {
 		return nil, err
 	}
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(assets)))
+	mux.Handle("GET /assets/", server.assetCaching(http.StripPrefix("/assets/", http.FileServerFS(assets))))
 	mux.Handle("GET /app", server.requireAuthentication(http.HandlerFunc(server.handleApp), true))
 	mux.Handle("GET /manifest.webmanifest", server.requireAuthentication(http.HandlerFunc(server.handleManifest), false))
 	mux.Handle("POST /auth/setup/begin", server.requirePublicOrigin(server.limitAuthenticationBegin(http.HandlerFunc(server.handleSetupBegin))))
@@ -88,7 +94,7 @@ func NewServer(config Config, repository *store.Store, authenticator *auth.Manag
 	mux.Handle("POST /api/owners/{id}/rename", server.requireAuthentication(server.requireMutation(http.HandlerFunc(server.handlePasskeyRename)), false))
 	mux.Handle("DELETE /api/owners/{id}", server.requireAuthentication(server.requireMutation(http.HandlerFunc(server.handleOwnerDelete)), false))
 	mux.Handle("GET /content/{id}/{name}", server.requireAuthentication(http.HandlerFunc(server.handleContent), false))
-	server.handler = server.securityHeaders(mux)
+	server.handler = server.securityHeaders(server.compressResponses(mux))
 	return server, nil
 }
 
