@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"embed"
 	"html/template"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,9 +27,8 @@ type Server struct {
 	joinCookie     string
 	secureCookies  bool
 	authBeginLimit *tokenBucket
-	swScript       []byte
-	swETag         string
-	assetETags     map[string]string
+	swAsset        staticAsset
+	assets         map[string]staticAsset
 }
 
 type pageData struct {
@@ -69,11 +67,7 @@ func NewServer(config Config, repository *store.Store, authenticator *auth.Manag
 	mux.HandleFunc("GET /join", server.handleJoin)
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /sw.js", server.handleServiceWorker)
-	assets, err := fs.Sub(webFiles, "web/assets")
-	if err != nil {
-		return nil, err
-	}
-	mux.Handle("GET /assets/", server.assetCaching(http.StripPrefix("/assets/", http.FileServerFS(assets))))
+	mux.HandleFunc("GET /assets/{name}", server.handleAsset)
 	mux.Handle("GET /app", server.requireAuthentication(http.HandlerFunc(server.handleApp), true))
 	mux.Handle("GET /manifest.webmanifest", server.requireAuthentication(http.HandlerFunc(server.handleManifest), false))
 	mux.Handle("POST /auth/setup/begin", server.requirePublicOrigin(server.limitAuthenticationBegin(http.HandlerFunc(server.handleSetupBegin))))

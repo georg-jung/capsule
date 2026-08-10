@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -26,6 +27,40 @@ var (
 	ErrConflict     = errors.New("name already exists")
 	ErrFileTooLarge = errors.New("file is too large")
 )
+
+// A stored object whose media type appears here is written twice: the raw
+// bytes plus a `.gz` sidecar next to them, so the HTTP layer can hand out a
+// compressed representation without spending CPU per request. Sidecars are
+// only kept for objects large enough for the header to pay for itself and
+// compressible enough to be worth the disk.
+const (
+	gzipSuffix               = ".gz"
+	minCompressibleSize      = 1024
+	maxUsefulCompressedRatio = 0.9
+)
+
+var compressibleContentTypes = []string{
+	"text/html",
+	"text/css",
+	"text/javascript",
+	"text/plain",
+	"text/markdown",
+	"application/json",
+	"application/manifest+json",
+	"image/svg+xml",
+}
+
+// CompressibleContentType reports whether responses or stored objects of this
+// media type are worth compressing. Already-compressed formats (images, video,
+// archives, PDFs) only grow.
+func CompressibleContentType(contentType string) bool {
+	for _, candidate := range compressibleContentTypes {
+		if strings.HasPrefix(contentType, candidate) {
+			return true
+		}
+	}
+	return false
+}
 
 type File struct {
 	ID          string    `json:"id"`
@@ -60,22 +95,41 @@ func (s *Store) PutFile(ctx context.Context, name string, source io.Reader) (Fil
 	peek, _ := buffered.Peek(512)
 	contentType := contentTypeFor(name, peek)
 	hash := sha256.New()
-	size, copyErr := io.Copy(io.MultiWriter(temp, hash), buffered)
+
+	// The gzip sidecar rides along on the single pass over the upload, so a
+	// compressible file is never read or rewritten a second time.
+	var compressed *gzip.Writer
+	compressedTemp, compressedTempName := newCompressedTemp(tempDir, contentType)
+	if compressedTemp != nil {
+		defer func() { _ = os.Remove(compressedTempName) }()
+		compressed = gzip.NewWriter(compressedTemp)
+	}
+
+	destinations := []io.Writer{temp, hash}
+	if compressed != nil {
+		destinations = append(destinations, compressed)
+	}
+	size, copyErr := io.Copy(io.MultiWriter(destinations...), buffered)
 	if copyErr != nil {
 		_ = temp.Close()
+		closeCompressedTemp(compressed, compressedTemp)
 		return File{}, false, fmt.Errorf("write upload: %w", copyErr)
 	}
 	if size > s.maxSize {
 		_ = temp.Close()
+		closeCompressedTemp(compressed, compressedTemp)
 		return File{}, false, ErrFileTooLarge
 	}
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
+		closeCompressedTemp(compressed, compressedTemp)
 		return File{}, false, fmt.Errorf("sync upload: %w", err)
 	}
 	if err := temp.Close(); err != nil {
+		closeCompressedTemp(compressed, compressedTemp)
 		return File{}, false, fmt.Errorf("close upload: %w", err)
 	}
+	keepCompressed := finishCompressedTemp(compressed, compressedTemp, size)
 
 	digest := hex.EncodeToString(hash.Sum(nil))
 	objectPath, err := s.objectPath(digest)
@@ -91,6 +145,15 @@ func (s *Store) PutFile(ctx context.Context, name string, source io.Reader) (Fil
 		}
 	} else if err != nil {
 		return File{}, false, fmt.Errorf("inspect file object: %w", err)
+	}
+	// Checked independently of the raw object so re-uploading a file stored
+	// before sidecars existed backfills one. A sidecar that cannot be
+	// committed is dropped rather than failing an upload whose actual bytes
+	// are already safely stored; the file simply serves uncompressed.
+	if keepCompressed {
+		if _, err := os.Stat(objectPath + gzipSuffix); errors.Is(err, os.ErrNotExist) {
+			_ = os.Rename(compressedTempName, objectPath+gzipSuffix)
+		}
 	}
 
 	var previousDigest sql.NullString
@@ -124,6 +187,49 @@ RETURNING id, name, content_type, size, sha256, created_at, updated_at`,
 	return file, file.ID != id, nil
 }
 
+// newCompressedTemp opens the scratch file that receives the gzip sidecar, or
+// returns a nil handle when this media type gains nothing from compression or
+// the scratch file cannot be created.
+func newCompressedTemp(tempDir, contentType string) (*os.File, string) {
+	if !CompressibleContentType(contentType) {
+		return nil, ""
+	}
+	temp, err := os.CreateTemp(tempDir, "upload-*.gz")
+	if err != nil {
+		return nil, ""
+	}
+	return temp, temp.Name()
+}
+
+func closeCompressedTemp(compressed *gzip.Writer, temp *os.File) {
+	if temp == nil {
+		return
+	}
+	_ = compressed.Close()
+	_ = temp.Close()
+}
+
+// finishCompressedTemp flushes the sidecar and reports whether it earns its
+// keep: tiny files and barely-compressible ones are dropped so the disk and
+// the extra stat per request only pay for real savings.
+//
+// A write error here drops the sidecar too rather than being reported. The raw
+// object is already complete by this point and nothing depends on the sidecar,
+// so a full disk or a flaky mount must not fail an otherwise good upload — it
+// only costs that file its compressed representation.
+func finishCompressedTemp(compressed *gzip.Writer, temp *os.File, size int64) bool {
+	if temp == nil {
+		return false
+	}
+	flushErr := compressed.Close()
+	syncErr := temp.Sync()
+	info, statErr := temp.Stat()
+	if closeErr := temp.Close(); flushErr != nil || syncErr != nil || statErr != nil || closeErr != nil {
+		return false
+	}
+	return size >= minCompressibleSize && float64(info.Size()) < float64(size)*maxUsefulCompressedRatio
+}
+
 func (s *Store) Files(ctx context.Context) ([]File, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, name, content_type, size, sha256, created_at, updated_at
@@ -144,27 +250,63 @@ FROM files ORDER BY name COLLATE NOCASE, id`)
 	return files, rows.Err()
 }
 
-func (s *Store) OpenFile(ctx context.Context, id string) (*os.File, File, error) {
+// Content is an open handle to one representation of a stored file: either the
+// raw object or the gzip sidecar written for it at upload time. Both decode to
+// the same bytes, so both answer to the file's SHA-256 as their entity tag.
+type Content struct {
+	*os.File
+	Size     int64
+	Encoding string
+}
+
+// OpenContent opens a stored file, preferring its precompressed sidecar when
+// the caller can accept gzip and one exists. Falling back to the raw object
+// keeps files uploaded before sidecars existed, or too small to have earned
+// one, serving normally.
+func (s *Store) OpenContent(ctx context.Context, id string, allowGzip bool) (Content, File, error) {
 	file, err := scanFile(s.db.QueryRowContext(ctx, `
 SELECT id, name, content_type, size, sha256, created_at, updated_at FROM files WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, File{}, ErrNotFound
+		return Content{}, File{}, ErrNotFound
 	}
 	if err != nil {
-		return nil, File{}, fmt.Errorf("find file: %w", err)
+		return Content{}, File{}, fmt.Errorf("find file: %w", err)
 	}
 	objectPath, err := s.objectPath(file.SHA256)
 	if err != nil {
-		return nil, File{}, fmt.Errorf("invalid file object: %w", err)
+		return Content{}, File{}, fmt.Errorf("invalid file object: %w", err)
+	}
+	if allowGzip && CompressibleContentType(file.ContentType) {
+		if opened, size, ok := openSized(objectPath + gzipSuffix); ok {
+			return Content{File: opened, Size: size, Encoding: "gzip"}, file, nil
+		}
 	}
 	opened, err := os.Open(objectPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, File{}, ErrNotFound
+		return Content{}, File{}, ErrNotFound
 	}
 	if err != nil {
-		return nil, File{}, fmt.Errorf("open file object: %w", err)
+		return Content{}, File{}, fmt.Errorf("open file object: %w", err)
 	}
-	return opened, file, nil
+	return Content{File: opened, Size: file.Size}, file, nil
+}
+
+func openSized(path string) (*os.File, int64, bool) {
+	opened, err := os.Open(path)
+	if err != nil {
+		return nil, 0, false
+	}
+	info, err := opened.Stat()
+	if err != nil {
+		_ = opened.Close()
+		return nil, 0, false
+	}
+	return opened, info.Size(), true
+}
+
+func (s *Store) OpenFile(ctx context.Context, id string) (*os.File, File, error) {
+	content, file, err := s.OpenContent(ctx, id, false)
+	return content.File, file, err
 }
 
 func (s *Store) RenameFile(ctx context.Context, id, name string) (File, error) {
@@ -228,10 +370,39 @@ func (s *Store) removeObjectIfUnreferenced(ctx context.Context, digest string) e
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(objectPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove unreferenced file object: %w", err)
+	// Removed independently: a raw object that refuses to go must not leave
+	// its sidecar behind as well.
+	return errors.Join(removeIfExists(objectPath), removeIfExists(objectPath+gzipSuffix))
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove file object %s: %w", filepath.Base(path), err)
 	}
 	return nil
+}
+
+// pruneTempUploads reclaims scratch files from uploads that were interrupted
+// before they could be committed or discarded — a crash mid-upload strands
+// both the raw temporary file and its in-progress gzip sidecar. Safe only at
+// startup, while no upload can be in flight.
+func (s *Store) pruneTempUploads() error {
+	tempDir := filepath.Join(s.dataDir, "tmp")
+	entries, err := os.ReadDir(tempDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("list temporary uploads: %w", err)
+	}
+	var failures []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "upload-") {
+			continue
+		}
+		failures = append(failures, removeIfExists(filepath.Join(tempDir, entry.Name())))
+	}
+	return errors.Join(failures...)
 }
 
 func (s *Store) pruneOrphanObjects(ctx context.Context) error {
@@ -266,18 +437,20 @@ func (s *Store) pruneOrphanObjects(ctx context.Context) error {
 		if entry.IsDir() {
 			return nil
 		}
-		digest := entry.Name()
+		// A gzip sidecar lives and dies with the object it was derived from,
+		// so it is pruned against the same set of referenced digests.
+		digest := strings.TrimSuffix(entry.Name(), gzipSuffix)
 		expectedPath, pathErr := s.objectPath(digest)
+		if digest != entry.Name() {
+			expectedPath += gzipSuffix
+		}
 		if pathErr != nil || filepath.Clean(expectedPath) != filepath.Clean(path) {
 			return nil
 		}
 		if _, found := referenced[digest]; found {
 			return nil
 		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove orphaned file object: %w", err)
-		}
-		return nil
+		return removeIfExists(path)
 	})
 }
 

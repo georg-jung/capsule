@@ -101,6 +101,10 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 			_ = db.Close()
 			return nil, err
 		}
+		if err := store.pruneTempUploads(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }
