@@ -54,11 +54,17 @@
 
   async function requestJSON(url, options = {}) {
     const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-    const response = await fetch(url, {
-      credentials: "same-origin",
-      ...options,
-      headers,
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        credentials: "same-origin",
+        ...options,
+        headers,
+        signal: AbortSignal.timeout(20000),
+      });
+    } catch (error) {
+      throw new Error(error.name === "TimeoutError" ? "The request timed out. Check your connection and try again." : "The request failed. Check your connection and try again.");
+    }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || "The request could not be completed.");
     return body;
