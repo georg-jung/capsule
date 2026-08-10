@@ -34,6 +34,14 @@ SELECT created_at, expires_at, consumed_at FROM invites WHERE token_hash = ?`, h
 	return Invite{Token: token, CreatedAt: created, ExpiresAt: expires}, nil
 }
 
+// sessionTTL is how long a session stays valid after it was last extended.
+// sessionRenewAfter is how much of that lifetime must elapse since the last
+// extension before Authenticate slides the expiry forward again.
+const (
+	sessionTTL        = 90 * 24 * time.Hour
+	sessionRenewAfter = 24 * time.Hour
+)
+
 type SessionCredentials struct {
 	Token     string
 	CSRFToken string
@@ -44,6 +52,9 @@ type Authenticated struct {
 	Owner     Owner
 	CSRFToken string
 	ExpiresAt time.Time
+	// Extended reports whether Authenticate slid the session's expiry
+	// forward. Callers should re-issue the session cookie when true.
+	Extended bool
 }
 
 func (s *Store) CreateSession(ctx context.Context, ownerID string) (SessionCredentials, error) {
@@ -56,7 +67,7 @@ func (s *Store) CreateSession(ctx context.Context, ownerID string) (SessionCrede
 		return SessionCredentials{}, err
 	}
 	createdAt := s.now().UTC()
-	session := SessionCredentials{Token: token, CSRFToken: csrf, ExpiresAt: createdAt.Add(30 * 24 * time.Hour)}
+	session := SessionCredentials{Token: token, CSRFToken: csrf, ExpiresAt: createdAt.Add(sessionTTL)}
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO sessions(token_hash, owner_id, csrf_token, created_at, expires_at)
 VALUES (?, ?, ?, ?, ?)`, hashToken(token), ownerID, csrf, formatTime(createdAt), formatTime(session.ExpiresAt)); err != nil {
@@ -96,6 +107,17 @@ SELECT owner_id, csrf_token, expires_at FROM sessions WHERE token_hash = ?`, has
 	if err != nil {
 		return Authenticated{}, err
 	}
+
+	now := s.now().UTC()
+	if authenticated.ExpiresAt.Before(now.Add(sessionTTL - sessionRenewAfter)) {
+		newExpiresAt := now.Add(sessionTTL)
+		if _, execErr := s.db.ExecContext(ctx, `
+UPDATE sessions SET expires_at = ? WHERE token_hash = ?`, formatTime(newExpiresAt), hashToken(token)); execErr == nil {
+			authenticated.ExpiresAt = newExpiresAt
+			authenticated.Extended = true
+		}
+	}
+
 	return authenticated, nil
 }
 

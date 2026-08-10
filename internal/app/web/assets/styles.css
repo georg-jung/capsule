@@ -36,6 +36,7 @@ label { display: block; margin: 1rem 0; font-weight: 600; text-align: left; }
 .connectivity { color: var(--text-muted); font-size: .78rem; }
 .connectivity.offline { color: #a35f18; font-weight: 700; }
 .dot-separator { opacity: .4; margin: 0 .05rem; }
+.ios-install-hint { margin: .3rem 0 0; font-size: .74rem; line-height: 1.4; color: var(--text-muted); max-width: 32rem; }
 .app-main { width: min(72rem, 100%); margin: 0 auto; padding: clamp(.85rem, 3vw, 2rem); }
 .library { margin-top: 0; }
 .library-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; min-height: 2.25rem; }

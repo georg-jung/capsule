@@ -112,6 +112,33 @@ test("complete private app lifecycle works online and offline", async ({ browser
   await blockedPage.getByLabel("Your name").fill("Ada");
   await blockedPage.getByRole("button", { name: "Register owner passkey" }).click();
   await expect(blockedPage).toHaveURL(/\/app$/);
+  await expect(blockedPage.locator("#file-summary")).toHaveText("3 files");
+
+  // A degenerate /api/library 200 response (e.g. a captive portal or
+  // misconfigured proxy) must not wipe the already rendered library. It
+  // should surface as an error toast instead. Uses this no-service-worker
+  // context so the check exercises app.js's own validation rather than being
+  // shadowed by the service worker's networkFirst handling of /api/library.
+  await blockedPage.route("**/api/library", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ files: [] }),
+  }));
+  await blockedPage.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(blockedPage.locator("#toast")).toContainText("The library could not be loaded.");
+  await expect(blockedPage.locator("#file-summary")).toHaveText("3 files");
+  await blockedPage.unroute("**/api/library");
+
+  await blockedPage.route("**/api/library", route => route.fulfill({
+    status: 200,
+    contentType: "text/html",
+    body: "<!doctype html><h1>Sign in to the network</h1>",
+  }));
+  await blockedPage.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(blockedPage.locator("#toast")).toContainText("The library could not be loaded.");
+  await expect(blockedPage.locator("#file-summary")).toHaveText("3 files");
+  await blockedPage.unroute("**/api/library");
+
   await blockedPage.getByRole("button", { name: "Manage" }).click();
   await blockedPage.getByRole("button", { name: "Log out on this device" }).click();
   await expect(blockedPage).toHaveURL("/");

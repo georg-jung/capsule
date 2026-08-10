@@ -112,7 +112,10 @@ func (s *Server) handleLanding(writer http.ResponseWriter, request *http.Request
 		s.render(writer, "setup.html", pageData{})
 		return
 	}
-	if _, err := s.session(request); err == nil {
+	if authenticated, token, err := s.session(request); err == nil {
+		if authenticated.Extended {
+			s.setSessionCookie(writer, store.SessionCredentials{Token: token, ExpiresAt: authenticated.ExpiresAt})
+		}
 		http.Redirect(writer, request, "/app", http.StatusSeeOther)
 		return
 	}
@@ -140,17 +143,24 @@ func (s *Server) render(writer http.ResponseWriter, name string, data pageData) 
 	}
 }
 
-func (s *Server) session(request *http.Request) (store.Authenticated, error) {
+// session authenticates the request's session cookie and also returns the
+// raw cookie token so callers can re-issue the cookie when the session was
+// extended.
+func (s *Server) session(request *http.Request) (store.Authenticated, string, error) {
 	cookie, err := request.Cookie(s.sessionCookie)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
-		return store.Authenticated{}, store.ErrUnauthenticated
+		return store.Authenticated{}, "", store.ErrUnauthenticated
 	}
-	return s.store.Authenticate(request.Context(), cookie.Value)
+	authenticated, err := s.store.Authenticate(request.Context(), cookie.Value)
+	if err != nil {
+		return store.Authenticated{}, "", err
+	}
+	return authenticated, cookie.Value, nil
 }
 
 func (s *Server) requireAuthentication(next http.Handler, browserPage bool) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		authenticated, err := s.session(request)
+		authenticated, token, err := s.session(request)
 		if err != nil {
 			if browserPage {
 				http.Redirect(writer, request, "/", http.StatusSeeOther)
@@ -158,6 +168,9 @@ func (s *Server) requireAuthentication(next http.Handler, browserPage bool) http
 				http.Error(writer, "authentication required", http.StatusUnauthorized)
 			}
 			return
+		}
+		if authenticated.Extended {
+			s.setSessionCookie(writer, store.SessionCredentials{Token: token, ExpiresAt: authenticated.ExpiresAt})
 		}
 		ctx := context.WithValue(request.Context(), authenticatedKey, authenticated)
 		next.ServeHTTP(writer, request.WithContext(ctx))

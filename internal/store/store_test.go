@@ -375,6 +375,75 @@ func TestFilesReplaceByNameAndKeepStableIdentity(t *testing.T) {
 	}
 }
 
+func TestSessionSlidingRenewal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	repo, err := store.Open(context.Background(), store.Config{
+		DataDir: t.TempDir(),
+		Now:     func() time.Time { return clock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+
+	owner := store.Owner{
+		ID:             "owner-one",
+		UserHandle:     []byte("owner-one-handle"),
+		CredentialID:   []byte("credential-one"),
+		PersonName:     "Georg",
+		PasskeyName:    "Windows Hello",
+		CredentialJSON: []byte(`{"id":"credential-one"}`),
+	}
+	if err := repo.Claim(context.Background(), "My tools", owner); err != nil {
+		t.Fatal(err)
+	}
+
+	session, err := repo.CreateSession(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInitialExpiry := now.Add(90 * 24 * time.Hour)
+	if !session.ExpiresAt.Equal(wantInitialExpiry) {
+		t.Fatalf("initial expiry = %v, want %v", session.ExpiresAt, wantInitialExpiry)
+	}
+
+	// (a) Authenticating within 24h of creation must not slide the expiry.
+	now = now.Add(23 * time.Hour)
+	authenticated, err := repo.Authenticate(context.Background(), session.Token)
+	if err != nil {
+		t.Fatalf("authenticate within renewal window: %v", err)
+	}
+	if authenticated.Extended {
+		t.Fatal("session should not have been extended within 24h of creation")
+	}
+	if !authenticated.ExpiresAt.Equal(wantInitialExpiry) {
+		t.Fatalf("expiry after early authenticate = %v, want unchanged %v", authenticated.ExpiresAt, wantInitialExpiry)
+	}
+
+	// (b) Advancing the clock past the renewal threshold slides the expiry forward.
+	now = now.Add(2 * time.Hour) // 25h since creation, > sessionRenewAfter (24h)
+	authenticated, err = repo.Authenticate(context.Background(), session.Token)
+	if err != nil {
+		t.Fatalf("authenticate past renewal window: %v", err)
+	}
+	if !authenticated.Extended {
+		t.Fatal("session should have been extended after 24h without contact")
+	}
+	wantRenewedExpiry := now.Add(90 * 24 * time.Hour)
+	if !authenticated.ExpiresAt.Equal(wantRenewedExpiry) {
+		t.Fatalf("expiry after renewal = %v, want %v", authenticated.ExpiresAt, wantRenewedExpiry)
+	}
+
+	// (c) Without further contact, the session still expires 90 days after the last renewal.
+	now = wantRenewedExpiry.Add(time.Nanosecond)
+	if _, err := repo.Authenticate(context.Background(), session.Token); !errors.Is(err, store.ErrUnauthenticated) {
+		t.Fatalf("authenticate after expiry error = %v, want ErrUnauthenticated", err)
+	}
+}
+
 func countObjects(t *testing.T, dataDir string) int {
 	t.Helper()
 	count := 0
