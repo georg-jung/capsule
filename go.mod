@@ -1,6 +1,6 @@
 module github.com/georg-jung/capsule
 
-go 1.26.5
+go 1.27.3
 
 require (
 	github.com/go-webauthn/webauthn v0.18.0
